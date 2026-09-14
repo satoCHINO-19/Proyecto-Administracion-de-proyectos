@@ -102,48 +102,77 @@ class ChecklistResult(BaseModel):
     items: list[ChecklistItem]
 
 
-PROMPT_RECONCILIAR = """Te doy una lista de ítems de un checklist de cumplimiento de un proceso \
-de contratación del Estado peruano (formato JSON). Esta lista se generó procesando el TDR por \
-tramos de páginas separados, así que puede contener ítems duplicados que en realidad describen \
-el MISMO requisito, extraídos con distinto código o redacción desde tramos distintos del \
-documento — por ejemplo, un requisito de cantidad de líneas telefónicas puede aparecer dos veces, \
-una con el valor correcto y otra con un valor incorrecto tomado de una tabla o sección distinta.
+PROMPT_RECONCILIAR = """Te doy una lista de requisitos de un checklist de cumplimiento de un \
+proceso de contratación del Estado peruano (código + texto del requisito, en JSON). La lista se \
+generó procesando el TDR por tramos de páginas separados, así que puede contener duplicados: el \
+mismo requisito extraído dos veces, con código o redacción distintos, desde tramos distintos del \
+documento (por ejemplo, un requisito de cantidad de líneas telefónicas puede aparecer con un \
+código en una tabla resumen y con otro código en el detalle por gamas).
 
-Tu tarea:
-1. Identifica los ítems que describen el mismo requisito subyacente (aunque tengan "item" o \
-redacción distintos) y fusiónalos en uno solo.
-2. Al fusionar, para "requisito_tdr" quédate con la versión más específica y completa; si dos \
-ítems fusionados se contradicen en una cifra o dato (por ejemplo uno dice 1145 y otro dice 1000), \
-usa la cifra que aparezca de forma más consistente y detallada entre TODOS los ítems de la lista \
-para ese mismo requisito, y recalcula "cumple" y "alerta" en consecuencia con esa cifra correcta.
-3. Conserva sin modificar los ítems que sean únicos (no tienen duplicado).
-4. No inventes información nueva ni elimines ítems que traten requisitos genuinamente distintos.
+Tu tarea es identificar SOLO esos duplicados genuinos: agrupa los códigos que describen \
+EXACTAMENTE el mismo dato o exigencia puntual del TDR.
 
-Lista de ítems (JSON):
-{items_json}
+MUY IMPORTANTE — NO agrupes códigos que traten temas distintos aunque se parezcan o estén en la \
+misma sección: por ejemplo, una certificación ISO 37001 (antisoborno) y una certificación ISO \
+9001 (calidad) NO son el mismo requisito aunque ambas sean "factor de evaluación facultativo" — \
+cada certificación exige un documento distinto y debe evaluarse por separado. Ante la duda, NO \
+agrupes: dos ítems que podrían ser el mismo requisito pero no estás seguro deben quedar SEPARADOS \
+en la respuesta (simplemente no los incluyas en ningún grupo).
 
-Devuelve la lista final, fusionada y sin duplicados."""
+Devuelve únicamente los grupos de 2 o más códigos que sí son duplicados del mismo requisito. \
+Cualquier código que no menciones en ningún grupo se conserva tal cual, sin cambios.
+
+Lista de requisitos (JSON):
+{items_json}"""
+
+
+class GrupoDuplicados(BaseModel):
+    codigos: list[str]
+
+
+class ReconciliacionResult(BaseModel):
+    grupos: list[GrupoDuplicados]
 
 
 def _reconciliar_items(client: genai.Client, items: list[dict]) -> list[dict]:
     """
-    Llamada final (sin subir archivos, solo texto) que fusiona ítems que en realidad describen
-    el mismo requisito pero llegaron duplicados por venir de tramos distintos del TDR trozado —
-    y que a veces usan una cifra incorrecta en alguno de los duplicados. Solo hace falta cuando
-    el TDR se procesó en más de un tramo.
+    Llamada final (sin subir archivos, solo texto) que identifica ítems duplicados por venir de
+    tramos distintos del TDR trozado. A propósito NO le pedimos al modelo que reescriba/fusione
+    el contenido: solo que agrupe los códigos que son el mismo requisito. La fusión real la hace
+    esta función en Python, quedándose con el ítem más completo de cada grupo — así un
+    agrupamiento erróneo del modelo nunca puede inventar contenido híbrido ni hacer desaparecer
+    un ítem sin dejar rastro (todo código no agrupado se conserva tal cual). Solo hace falta
+    cuando el TDR se procesó en más de un tramo.
     """
-    contents = [PROMPT_RECONCILIAR.format(items_json=json.dumps(items, ensure_ascii=False))]
+    por_codigo = {it["item"]: it for it in items if it.get("item")}
+    resumen = [{"item": it["item"], "requisito_tdr": it.get("requisito_tdr", "")} for it in items]
+    contents = [PROMPT_RECONCILIAR.format(items_json=json.dumps(resumen, ensure_ascii=False))]
     response = _generar_con_reintento(
         client,
         model=MODEL,
         contents=contents,
         config={
             "response_mime_type": "application/json",
-            "response_schema": ChecklistResult,
+            "response_schema": ReconciliacionResult,
         },
     )
-    resultado: ChecklistResult = response.parsed
-    return [item.model_dump() for item in resultado.items]
+    resultado: ReconciliacionResult = response.parsed
+
+    codigos_agrupados: set[str] = set()
+    items_finales: list[dict] = []
+    for grupo in resultado.grupos:
+        codigos_grupo = [c for c in grupo.codigos if c in por_codigo and c not in codigos_agrupados]
+        if len(codigos_grupo) < 2:
+            continue  # grupo inválido (código repetido, desconocido, o ya usado en otro grupo)
+        mejor = max(codigos_grupo, key=lambda c: len(por_codigo[c].get("propuesta_extracto") or ""))
+        items_finales.append(por_codigo[mejor])
+        codigos_agrupados.update(codigos_grupo)
+
+    for codigo, it in por_codigo.items():
+        if codigo not in codigos_agrupados:
+            items_finales.append(it)
+
+    return items_finales
 
 
 def _get_client() -> genai.Client:
