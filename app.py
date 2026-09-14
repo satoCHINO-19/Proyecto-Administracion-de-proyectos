@@ -124,12 +124,19 @@ if archivos and st.button("Procesar", type="primary"):
         archivos_por_rol[rol].append(archivo.getvalue())
         nombres_por_rol[rol].append(archivo.name)
 
+    progreso_placeholder = st.empty()
+
+    def _reportar_progreso(actual: int, total: int) -> None:
+        progreso_placeholder.info(f"Procesando sección {actual} de {total} del TDR...")
+
     with st.spinner("Subiendo archivos y generando checklist con Gemini... puede tardar un poco con PDFs grandes"):
         try:
-            items = procesar_checklist(archivos_por_rol, nombres_por_rol)
+            items = procesar_checklist(archivos_por_rol, nombres_por_rol, on_progreso=_reportar_progreso)
         except Exception as e:
             st.error(f"Ocurrió un error procesando los documentos: {e}")
             st.stop()
+
+    progreso_placeholder.empty()
 
     if not items:
         st.warning("Gemini no devolvió ningún ítem. Revisa que el TDR tenga requerimientos numerados.")

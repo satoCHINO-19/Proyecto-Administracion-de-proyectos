@@ -1,19 +1,31 @@
+import io
 import os
-import re
 import tempfile
-import unicodedata
+import time
 
+import pypdf
 from google import genai
+from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
-
-def _nombre_seguro(nombre: str) -> str:
-    """Quita tildes/ñ y cualquier caracter no-ASCII para evitar errores al subir el archivo."""
-    sin_tildes = unicodedata.normalize("NFKD", nombre).encode("ascii", "ignore").decode("ascii")
-    return re.sub(r"[^A-Za-z0-9._-]", "_", sin_tildes) or "archivo.pdf"
-
-
 MODEL = "gemini-3.6-flash"
+
+
+def _generar_con_reintento(client: genai.Client, **kwargs):
+    """
+    Reintenta la llamada a Gemini ante errores transitorios del servidor (503 "alta demanda"),
+    con espera creciente entre intentos. Necesario sobre todo cuando el TDR se procesa por
+    varios tramos: con más llamadas, la probabilidad de toparse con un 503 pasajero en alguna
+    de ellas sube, y antes bastaba con que fallara una sola para perder todo el resultado.
+    """
+    intentos = 3
+    for intento in range(intentos):
+        try:
+            return client.models.generate_content(**kwargs)
+        except genai_errors.ServerError:
+            if intento == intentos - 1:
+                raise
+            time.sleep(5 * (intento + 1))
 
 TIPOS_VALIDOS = ["Técnico", "Administrativo", "Económico", "Plazo", "Perfil profesional", "Gestión de Proyecto"]
 
@@ -66,7 +78,10 @@ revisión manual (ej.: una garantía o plazo mínimo que la propuesta o el contr
 Si falta alguno de los tres documentos, trabaja solo con lo que tengas (por ejemplo, si no hay \
 propuesta, deja "propuesta_extracto" vacío y "cumple" como "SIN_EVALUAR").
 
-Devuelve TODOS los requerimientos encontrados en el TDR, en orden."""
+El documento TDR que recibes puede ser el documento completo o solo un tramo de páginas de un \
+documento más grande (una sección). En cualquier caso, extrae TODOS y cada uno de los \
+requerimientos numerados que aparezcan en las páginas que te llegaron, sin resumir ni saltarte \
+ninguno — aunque el tramo empiece o termine a mitad de una sección."""
 
 
 class ChecklistItem(BaseModel):
@@ -103,7 +118,11 @@ def _subir_documentos(
     for rol, lista_bytes in archivos_por_rol.items():
         nombres = nombres_por_rol.get(rol, [])
         for i, (data, nombre) in enumerate(zip(lista_bytes, nombres)):
-            ruta = os.path.join(tmp_dir, f"{rol.lower()}_{i}_{_nombre_seguro(nombre)}")
+            # El nombre de archivo en disco es siempre "<rol>_<i>.pdf", sin importar tildes ni
+            # sufijos descriptivos en `nombre` (como "(sección 2 de 4)") — así el cliente de
+            # Gemini siempre puede detectar el mime type por la extensión. El nombre original,
+            # con su sufijo si lo tiene, solo se usa como etiqueta de texto en el prompt.
+            ruta = os.path.join(tmp_dir, f"{rol.lower()}_{i}.pdf")
             with open(ruta, "wb") as f:
                 f.write(data)
             archivo_subido = client.files.upload(file=ruta)
@@ -112,18 +131,46 @@ def _subir_documentos(
     return contents
 
 
-def procesar_checklist(archivos_por_rol: dict[str, list[bytes]], nombres_por_rol: dict[str, list[str]]) -> list[dict]:
+def _dividir_pdf_por_paginas(pdf_bytes: bytes, tamano_chunk: int = 30, solapamiento: int = 3) -> list[bytes]:
     """
-    archivos_por_rol: {"TDR": [bytes, ...], "CONSULTAS": [...], "PROPUESTA": [...], "OTRO": [...]}
-    nombres_por_rol: mismo shape pero con nombres de archivo originales, solo para el prompt.
+    Divide un PDF en tramos de `tamano_chunk` páginas (con `solapamiento` páginas repetidas
+    entre tramos consecutivos, para no cortar un requerimiento justo en el límite). Un TDR
+    grande procesado de una sola vez tiende a que el modelo devuelva solo una muestra de los
+    requerimientos en vez de todos; procesarlo por tramos más chicos fuerza una extracción
+    más exhaustiva. Si el documento ya es chico, devuelve una sola parte (sin trocear).
     """
-    client = _get_client()
+    lector = pypdf.PdfReader(io.BytesIO(pdf_bytes))
+    total_paginas = len(lector.pages)
+    if total_paginas <= tamano_chunk:
+        return [pdf_bytes]
 
+    tramos: list[bytes] = []
+    inicio = 0
+    while inicio < total_paginas:
+        fin = min(inicio + tamano_chunk, total_paginas)
+        escritor = pypdf.PdfWriter()
+        for num_pagina in range(inicio, fin):
+            escritor.add_page(lector.pages[num_pagina])
+        buffer = io.BytesIO()
+        escritor.write(buffer)
+        tramos.append(buffer.getvalue())
+        if fin >= total_paginas:
+            break
+        inicio = fin - solapamiento
+    return tramos
+
+
+def _procesar_checklist_una_llamada(
+    client: genai.Client,
+    archivos_por_rol: dict[str, list[bytes]],
+    nombres_por_rol: dict[str, list[str]],
+) -> list[dict]:
     with tempfile.TemporaryDirectory() as tmp_dir:
         contents = _subir_documentos(client, archivos_por_rol, nombres_por_rol, tmp_dir)
         contents.append(PROMPT)
 
-        response = client.models.generate_content(
+        response = _generar_con_reintento(
+            client,
             model=MODEL,
             contents=contents,
             config={
@@ -134,6 +181,53 @@ def procesar_checklist(archivos_por_rol: dict[str, list[bytes]], nombres_por_rol
 
     resultado: ChecklistResult = response.parsed
     return [item.model_dump() for item in resultado.items]
+
+
+def procesar_checklist(
+    archivos_por_rol: dict[str, list[bytes]],
+    nombres_por_rol: dict[str, list[str]],
+    on_progreso=None,
+) -> list[dict]:
+    """
+    archivos_por_rol: {"TDR": [bytes, ...], "CONSULTAS": [...], "PROPUESTA": [...], "OTRO": [...]}
+    nombres_por_rol: mismo shape pero con nombres de archivo originales, solo para el prompt.
+    on_progreso: callback opcional on_progreso(tramo_actual, total_tramos) para mostrar avance
+    en la interfaz cuando el TDR es grande y se procesa por secciones.
+
+    El TDR se divide en tramos de páginas (ver _dividir_pdf_por_paginas) y cada tramo se procesa
+    en una llamada separada junto con las CONSULTAS y la PROPUESTA completas, para que el modelo
+    no se limite a devolver una muestra de los requerimientos de un documento largo. Los
+    resultados de todos los tramos se combinan, descartando ítems duplicados por su código.
+    """
+    client = _get_client()
+
+    tdr_bytes_lista = archivos_por_rol.get("TDR") or []
+    if not tdr_bytes_lista:
+        return _procesar_checklist_una_llamada(client, archivos_por_rol, nombres_por_rol)
+
+    tramos = _dividir_pdf_por_paginas(tdr_bytes_lista[0])
+    if len(tramos) <= 1:
+        return _procesar_checklist_una_llamada(client, archivos_por_rol, nombres_por_rol)
+
+    tdr_nombre = nombres_por_rol["TDR"][0]
+    resto_archivos = {rol: v for rol, v in archivos_por_rol.items() if rol != "TDR"}
+    resto_nombres = {rol: v for rol, v in nombres_por_rol.items() if rol != "TDR"}
+
+    items_combinados: list[dict] = []
+    codigos_vistos: set[str] = set()
+    for i, tramo_bytes in enumerate(tramos):
+        if on_progreso:
+            on_progreso(i + 1, len(tramos))
+        archivos = {"TDR": [tramo_bytes], **resto_archivos}
+        nombres = {"TDR": [f"{tdr_nombre} (sección {i + 1} de {len(tramos)})"], **resto_nombres}
+        items_tramo = _procesar_checklist_una_llamada(client, archivos, nombres)
+        for it in items_tramo:
+            codigo = it.get("item", "")
+            if codigo not in codigos_vistos:
+                codigos_vistos.add(codigo)
+                items_combinados.append(it)
+
+    return items_combinados
 
 
 # ---------------------------------------------------------------- EDT / WBS
@@ -243,7 +337,8 @@ def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
         contents = _subir_documentos(client, {"TDR": [tdr_bytes]}, {"TDR": [tdr_nombre]}, tmp_dir)
         contents.append(PROMPT_EDT.format(base_conocimientos=base_conocimientos))
 
-        response = client.models.generate_content(
+        response = _generar_con_reintento(
+            client,
             model=MODEL,
             contents=contents,
             config={

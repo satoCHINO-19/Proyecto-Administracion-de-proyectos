@@ -3,3 +3,4 @@ google-genai
 pandas
 python-dotenv
 openpyxl
+pypdf
