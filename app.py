@@ -127,7 +127,10 @@ if archivos and st.button("Procesar", type="primary"):
     progreso_placeholder = st.empty()
 
     def _reportar_progreso(actual: int, total: int) -> None:
-        progreso_placeholder.info(f"Procesando sección {actual} de {total} del TDR...")
+        if actual == -1:
+            progreso_placeholder.info("Reconciliando resultados de todas las secciones...")
+        else:
+            progreso_placeholder.info(f"Procesando sección {actual} de {total} del TDR...")
 
     with st.spinner("Subiendo archivos y generando checklist con Gemini... puede tardar un poco con PDFs grandes"):
         try:

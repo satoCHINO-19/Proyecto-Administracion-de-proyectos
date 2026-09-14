@@ -1,4 +1,5 @@
 import io
+import json
 import os
 import tempfile
 import time
@@ -101,6 +102,50 @@ class ChecklistResult(BaseModel):
     items: list[ChecklistItem]
 
 
+PROMPT_RECONCILIAR = """Te doy una lista de ítems de un checklist de cumplimiento de un proceso \
+de contratación del Estado peruano (formato JSON). Esta lista se generó procesando el TDR por \
+tramos de páginas separados, así que puede contener ítems duplicados que en realidad describen \
+el MISMO requisito, extraídos con distinto código o redacción desde tramos distintos del \
+documento — por ejemplo, un requisito de cantidad de líneas telefónicas puede aparecer dos veces, \
+una con el valor correcto y otra con un valor incorrecto tomado de una tabla o sección distinta.
+
+Tu tarea:
+1. Identifica los ítems que describen el mismo requisito subyacente (aunque tengan "item" o \
+redacción distintos) y fusiónalos en uno solo.
+2. Al fusionar, para "requisito_tdr" quédate con la versión más específica y completa; si dos \
+ítems fusionados se contradicen en una cifra o dato (por ejemplo uno dice 1145 y otro dice 1000), \
+usa la cifra que aparezca de forma más consistente y detallada entre TODOS los ítems de la lista \
+para ese mismo requisito, y recalcula "cumple" y "alerta" en consecuencia con esa cifra correcta.
+3. Conserva sin modificar los ítems que sean únicos (no tienen duplicado).
+4. No inventes información nueva ni elimines ítems que traten requisitos genuinamente distintos.
+
+Lista de ítems (JSON):
+{items_json}
+
+Devuelve la lista final, fusionada y sin duplicados."""
+
+
+def _reconciliar_items(client: genai.Client, items: list[dict]) -> list[dict]:
+    """
+    Llamada final (sin subir archivos, solo texto) que fusiona ítems que en realidad describen
+    el mismo requisito pero llegaron duplicados por venir de tramos distintos del TDR trozado —
+    y que a veces usan una cifra incorrecta en alguno de los duplicados. Solo hace falta cuando
+    el TDR se procesó en más de un tramo.
+    """
+    contents = [PROMPT_RECONCILIAR.format(items_json=json.dumps(items, ensure_ascii=False))]
+    response = _generar_con_reintento(
+        client,
+        model=MODEL,
+        contents=contents,
+        config={
+            "response_mime_type": "application/json",
+            "response_schema": ChecklistResult,
+        },
+    )
+    resultado: ChecklistResult = response.parsed
+    return [item.model_dump() for item in resultado.items]
+
+
 def _get_client() -> genai.Client:
     api_key = os.environ.get("GEMINI_API_KEY")
     if not api_key:
@@ -197,7 +242,9 @@ def procesar_checklist(
     El TDR se divide en tramos de páginas (ver _dividir_pdf_por_paginas) y cada tramo se procesa
     en una llamada separada junto con las CONSULTAS y la PROPUESTA completas, para que el modelo
     no se limite a devolver una muestra de los requerimientos de un documento largo. Los
-    resultados de todos los tramos se combinan, descartando ítems duplicados por su código.
+    resultados de todos los tramos se combinan, descartando ítems duplicados por su código, y
+    luego se reconcilian en una llamada final (ver _reconciliar_items) para fusionar ítems que
+    describen el mismo requisito pero llegaron con códigos distintos desde tramos distintos.
     """
     client = _get_client()
 
@@ -227,7 +274,9 @@ def procesar_checklist(
                 codigos_vistos.add(codigo)
                 items_combinados.append(it)
 
-    return items_combinados
+    if on_progreso:
+        on_progreso(-1, len(tramos))  # -1: señal de "reconciliando", ya no es un tramo más
+    return _reconciliar_items(client, items_combinados)
 
 
 # ---------------------------------------------------------------- EDT / WBS
