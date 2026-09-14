@@ -1,0 +1,20 @@
+{
+  "descripcion": "Base de conocimientos de referencia para estimar duraciones y costos de un EDT/WBS de proyectos de servicios TI/telecomunicaciones para el Estado peruano. Son valores orientativos (soles y días calendario) que la IA debe usar como referencia y ajustar según el alcance real del TDR.",
+  "roles": [
+    {"rol": "Gestor de Proyecto", "costo_dia_soles": 450},
+    {"rol": "Especialista Técnico", "costo_dia_soles": 380},
+    {"rol": "Técnico de Instalación", "costo_dia_soles": 220},
+    {"rol": "Especialista en Capacitación", "costo_dia_soles": 300},
+    {"rol": "Especialista Administrativo/Documentario", "costo_dia_soles": 280}
+  ],
+  "duraciones_tipicas": [
+    {"entregable": "Plan de Proyecto", "dias_calendario": 5, "rol_responsable": "Gestor de Proyecto"},
+    {"entregable": "Cronograma de actividades", "dias_calendario": 2, "rol_responsable": "Gestor de Proyecto"},
+    {"entregable": "Acta de reunión (una)", "dias_calendario": 1, "rol_responsable": "Gestor de Proyecto"},
+    {"entregable": "Activación / puesta en marcha del servicio", "dias_calendario": 14, "rol_responsable": "Técnico de Instalación"},
+    {"entregable": "Instalación e integración de equipos (indoor/outdoor)", "dias_calendario": 20, "rol_responsable": "Técnico de Instalación"},
+    {"entregable": "Capacitación a usuarios/administradores", "dias_calendario": 3, "rol_responsable": "Especialista en Capacitación"},
+    {"entregable": "Elaboración de informe técnico o diagnóstico", "dias_calendario": 10, "rol_responsable": "Especialista Técnico"},
+    {"entregable": "Trámite documentario / RNP / garantías", "dias_calendario": 5, "rol_responsable": "Especialista Administrativo/Documentario"}
+  ]
+}

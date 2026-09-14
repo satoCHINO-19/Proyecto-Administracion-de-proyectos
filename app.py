@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from procesamiento import procesar_checklist
+from procesamiento import generar_edt, procesar_checklist
 
 load_dotenv()
 
@@ -136,6 +136,9 @@ if archivos and st.button("Procesar", type="primary"):
         st.stop()
 
     st.session_state["items"] = items
+    if archivos_por_rol["TDR"]:
+        st.session_state["tdr_bytes"] = archivos_por_rol["TDR"][0]
+        st.session_state["tdr_nombre"] = nombres_por_rol["TDR"][0]
 
 items = st.session_state.get("items")
 
@@ -272,3 +275,71 @@ if items:
         file_name="checklist_tdr_consultas_propuesta.xlsx",
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
+
+    # ------------------------------------------------------------ EDT / WBS
+    st.markdown("---")
+    st.subheader("EDT / WBS del proyecto")
+    st.caption(
+        "Genera la Estructura de Desglose del Trabajo a partir del TDR, con tiempos y costos "
+        "estimados cruzando la base de conocimientos de referencia (base_conocimientos.json)."
+    )
+
+    if st.session_state.get("tdr_bytes") and st.button("Generar EDT/WBS"):
+        with st.spinner("Generando EDT/WBS con Gemini..."):
+            try:
+                st.session_state["edt_items"] = generar_edt(
+                    st.session_state["tdr_bytes"], st.session_state["tdr_nombre"]
+                )
+            except Exception as e:
+                st.error(f"Ocurrió un error generando el EDT: {e}")
+
+    edt_items = st.session_state.get("edt_items")
+    if edt_items:
+        df_edt = pd.DataFrame(edt_items)
+        fases = df_edt[~df_edt["codigo"].str.contains(r"\.")]
+        total_dias = fases["duracion_dias"].sum()
+        total_costo = fases["costo_soles"].sum()
+
+        e1, e2 = st.columns(2)
+        e1.markdown(
+            f'<div class="card"><div class="stat-num" style="color:{TEXT}">{total_dias:.0f} días</div>'
+            f'<div class="stat-label">Duración total estimada</div></div>',
+            unsafe_allow_html=True,
+        )
+        e2.markdown(
+            f'<div class="card"><div class="stat-num" style="color:{TEXT}">S/ {total_costo:,.0f}</div>'
+            f'<div class="stat-label">Costo total estimado</div></div>',
+            unsafe_allow_html=True,
+        )
+
+        for _, row in df_edt.sort_values("codigo").iterrows():
+            nivel = str(row["codigo"]).count(".")
+            indent = nivel * 28
+            render_html(
+                f"""
+                <div class="card" style="margin-left:{indent}px;">
+                  <div style="display:flex; justify-content:space-between; gap:12px;">
+                    <div>
+                      <span class="row-item">{html.escape(str(row['codigo']))}</span>
+                      <strong>{html.escape(str(row['nombre']))}</strong>
+                      <span class="badge" style="color:{MUTED};background:{GRAY_BG};margin-left:6px;">{html.escape(str(row['tipo']))}</span>
+                    </div>
+                    <div style="white-space:nowrap; color:{TEXT};">
+                      {row['duracion_dias']:.0f} días · S/ {row['costo_soles']:,.0f}
+                    </div>
+                  </div>
+                  <div style="color:{MUTED}; font-size:11.5px; margin-top:4px;">
+                    Fuente: {html.escape(str(row['fuente_estimacion']))}
+                  </div>
+                </div>
+                """
+            )
+
+        buffer_edt = io.BytesIO()
+        df_edt.to_excel(buffer_edt, index=False, sheet_name="EDT_WBS")
+        st.download_button(
+            "Descargar EDT/WBS en Excel",
+            data=buffer_edt.getvalue(),
+            file_name="edt_wbs.xlsx",
+            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        )

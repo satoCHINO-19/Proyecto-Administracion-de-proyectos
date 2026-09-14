@@ -93,6 +93,25 @@ def _get_client() -> genai.Client:
     return genai.Client(api_key=api_key)
 
 
+def _subir_documentos(
+    client: genai.Client,
+    archivos_por_rol: dict[str, list[bytes]],
+    nombres_por_rol: dict[str, list[str]],
+    tmp_dir: str,
+) -> list:
+    contents: list = []
+    for rol, lista_bytes in archivos_por_rol.items():
+        nombres = nombres_por_rol.get(rol, [])
+        for i, (data, nombre) in enumerate(zip(lista_bytes, nombres)):
+            ruta = os.path.join(tmp_dir, f"{rol.lower()}_{i}_{_nombre_seguro(nombre)}")
+            with open(ruta, "wb") as f:
+                f.write(data)
+            archivo_subido = client.files.upload(file=ruta)
+            contents.append(f"--- Documento tipo {rol}: {nombre} ---")
+            contents.append(archivo_subido)
+    return contents
+
+
 def procesar_checklist(archivos_por_rol: dict[str, list[bytes]], nombres_por_rol: dict[str, list[str]]) -> list[dict]:
     """
     archivos_por_rol: {"TDR": [bytes, ...], "CONSULTAS": [...], "PROPUESTA": [...], "OTRO": [...]}
@@ -100,18 +119,8 @@ def procesar_checklist(archivos_por_rol: dict[str, list[bytes]], nombres_por_rol
     """
     client = _get_client()
 
-    contents: list = []
     with tempfile.TemporaryDirectory() as tmp_dir:
-        for rol, lista_bytes in archivos_por_rol.items():
-            nombres = nombres_por_rol.get(rol, [])
-            for i, (data, nombre) in enumerate(zip(lista_bytes, nombres)):
-                ruta = os.path.join(tmp_dir, f"{rol.lower()}_{i}_{_nombre_seguro(nombre)}")
-                with open(ruta, "wb") as f:
-                    f.write(data)
-                archivo_subido = client.files.upload(file=ruta)
-                contents.append(f"--- Documento tipo {rol}: {nombre} ---")
-                contents.append(archivo_subido)
-
+        contents = _subir_documentos(client, archivos_por_rol, nombres_por_rol, tmp_dir)
         contents.append(PROMPT)
 
         response = client.models.generate_content(
@@ -124,4 +133,71 @@ def procesar_checklist(archivos_por_rol: dict[str, list[bytes]], nombres_por_rol
         )
 
     resultado: ChecklistResult = response.parsed
+    return [item.model_dump() for item in resultado.items]
+
+
+# ---------------------------------------------------------------- EDT / WBS
+
+BASE_CONOCIMIENTOS_PATH = os.path.join(os.path.dirname(__file__), "base_conocimientos.json")
+
+PROMPT_EDT = """Eres un especialista en gestión de proyectos. Te doy el TDR (Términos de \
+Referencia) de un proceso de contratación del Estado peruano y una base de conocimientos con \
+costos y duraciones típicas de referencia (en JSON).
+
+Tu tarea es construir la Estructura de Desglose del Trabajo (EDT/WBS) del proyecto:
+
+1. Descompón el alcance del TDR en una jerarquía de máximo 3 niveles: Fase (nivel 1), \
+Entregable (nivel 2) y Actividad (nivel 3). Usa códigos tipo "1", "1.1", "1.1.1".
+2. Para cada nodo, estima "duracion_dias" (días calendario) y "costo_soles":
+   - Si el nodo se parece a un entregable de la base de conocimientos, usa ese valor de \
+referencia (ajustándolo si el alcance del TDR es claramente mayor o menor) y cita en \
+"fuente_estimacion" el nombre exacto del entregable de referencia que usaste.
+   - Si no hay nada parecido en la base de conocimientos, estima tú mismo un valor razonable \
+y escribe en "fuente_estimacion" "Estimado por IA (sin referencia en base de conocimientos)".
+3. Indica en "depende_de" el código del nodo previo del que depende (cadena vacía si no depende \
+de ninguno o es el primero de su nivel).
+4. IMPORTANTE para que los totales se puedan sumar sin duplicar: la duración y el costo de cada \
+Fase (nivel 1, código sin puntos) deben ser el TOTAL agregado de sus Entregables y Actividades \
+hijas, no un valor independiente adicional.
+
+Base de conocimientos (JSON de referencia):
+{base_conocimientos}
+
+Devuelve la jerarquía completa cubriendo todo el alcance del TDR, no solo un resumen."""
+
+
+class EDTItem(BaseModel):
+    codigo: str
+    nombre: str
+    tipo: str
+    duracion_dias: float
+    costo_soles: float
+    fuente_estimacion: str
+    depende_de: str
+
+
+class EDTResult(BaseModel):
+    items: list[EDTItem]
+
+
+def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
+    """Genera un EDT/WBS con tiempos y costos a partir del TDR, cruzándolo con base_conocimientos.json."""
+    client = _get_client()
+    with open(BASE_CONOCIMIENTOS_PATH, "r", encoding="utf-8") as f:
+        base_conocimientos = f.read()
+
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        contents = _subir_documentos(client, {"TDR": [tdr_bytes]}, {"TDR": [tdr_nombre]}, tmp_dir)
+        contents.append(PROMPT_EDT.format(base_conocimientos=base_conocimientos))
+
+        response = client.models.generate_content(
+            model=MODEL,
+            contents=contents,
+            config={
+                "response_mime_type": "application/json",
+                "response_schema": EDTResult,
+            },
+        )
+
+    resultado: EDTResult = response.parsed
     return [item.model_dump() for item in resultado.items]
