@@ -312,7 +312,9 @@ if items:
             unsafe_allow_html=True,
         )
 
-        for _, row in df_edt.sort_values("codigo").iterrows():
+        # ya viene ordenado numéricamente por jerarquía desde generar_edt(); un sort_values("codigo")
+        # aquí ordenaría como texto ("1.10" antes de "1.2") y rompería la jerarquía.
+        for _, row in df_edt.iterrows():
             nivel = str(row["codigo"]).count(".")
             indent = nivel * 28
             render_html(

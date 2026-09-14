@@ -154,8 +154,8 @@ referencia (ajustándolo si el alcance del TDR es claramente mayor o menor) y ci
 "fuente_estimacion" el nombre exacto del entregable de referencia que usaste.
    - Si no hay nada parecido en la base de conocimientos, estima tú mismo un valor razonable \
 y escribe en "fuente_estimacion" "Estimado por IA (sin referencia en base de conocimientos)".
-3. Indica en "depende_de" el código del nodo previo del que depende (cadena vacía si no depende \
-de ninguno o es el primero de su nivel).
+3. Dejar "depende_de" como cadena vacía — la dependencia entre nodos se calcula \
+automáticamente después, a partir del orden de los códigos.
 4. IMPORTANTE para que los totales se puedan sumar sin duplicar: la duración y el costo de cada \
 Fase (nivel 1, código sin puntos) deben ser el TOTAL agregado de sus Entregables y Actividades \
 hijas, no un valor independiente adicional.
@@ -180,6 +180,25 @@ class EDTResult(BaseModel):
     items: list[EDTItem]
 
 
+def _clave_codigo(codigo: str) -> tuple[int, ...]:
+    return tuple(int(parte) for parte in codigo.split("."))
+
+
+def _calcular_dependencias(items: list[dict]) -> None:
+    """
+    Sobrescribe depende_de de forma determinística a partir de la jerarquía de códigos,
+    en vez de confiar en que el modelo infiera la relación correcta (podía apuntar a un
+    código de otra rama del árbol). Regla: cada nodo depende del hermano anterior bajo el
+    mismo padre; el primer hijo de un padre depende del propio padre.
+    """
+    ultimo_hijo_de: dict[str, str] = {}
+    for it in items:
+        codigo = it["codigo"]
+        padre = codigo.rsplit(".", 1)[0] if "." in codigo else ""
+        it["depende_de"] = ultimo_hijo_de.get(padre, padre)
+        ultimo_hijo_de[padre] = codigo
+
+
 def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
     """Genera un EDT/WBS con tiempos y costos a partir del TDR, cruzándolo con base_conocimientos.json."""
     client = _get_client()
@@ -200,4 +219,7 @@ def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
         )
 
     resultado: EDTResult = response.parsed
-    return [item.model_dump() for item in resultado.items]
+    items = [item.model_dump() for item in resultado.items]
+    items.sort(key=lambda it: _clave_codigo(it["codigo"]))
+    _calcular_dependencias(items)
+    return items
