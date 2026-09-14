@@ -148,17 +148,21 @@ Tu tarea es construir la Estructura de Desglose del Trabajo (EDT/WBS) del proyec
 
 1. Descompón el alcance del TDR en una jerarquía de máximo 3 niveles: Fase (nivel 1), \
 Entregable (nivel 2) y Actividad (nivel 3). Usa códigos tipo "1", "1.1", "1.1.1".
-2. Para cada nodo, estima "duracion_dias" (días calendario) y "costo_soles":
+2. Para cada nodo HOJA (el que no tiene hijos propios, normalmente una Actividad), estima \
+"duracion_dias" (días calendario) y "costo_soles":
    - Si el nodo se parece a un entregable de la base de conocimientos, usa ese valor de \
 referencia (ajustándolo si el alcance del TDR es claramente mayor o menor) y cita en \
 "fuente_estimacion" el nombre exacto del entregable de referencia que usaste.
    - Si no hay nada parecido en la base de conocimientos, estima tú mismo un valor razonable \
 y escribe en "fuente_estimacion" "Estimado por IA (sin referencia en base de conocimientos)".
-3. Dejar "depende_de" como cadena vacía — la dependencia entre nodos se calcula \
+3. Para cada nodo que SÍ tiene hijos (Fase o Entregable), deja "duracion_dias" y "costo_soles" \
+en 0 y "fuente_estimacion" vacía — se calculan automáticamente sumando a sus hijos. En su lugar, \
+indica en "ejecucion_hijos" si sus hijos directos se ejecutan "secuencial" (uno después de que \
+termina el anterior) o "paralelo" (al mismo tiempo, por ejemplo actividades de soporte, reportes \
+mensuales y prestación continua del servicio que ocurren simultáneamente durante toda la vigencia \
+del contrato). En los nodos hoja deja "ejecucion_hijos" como cadena vacía.
+4. Dejar "depende_de" como cadena vacía — la dependencia entre nodos se calcula \
 automáticamente después, a partir del orden de los códigos.
-4. IMPORTANTE para que los totales se puedan sumar sin duplicar: la duración y el costo de cada \
-Fase (nivel 1, código sin puntos) deben ser el TOTAL agregado de sus Entregables y Actividades \
-hijas, no un valor independiente adicional.
 
 Base de conocimientos (JSON de referencia):
 {base_conocimientos}
@@ -174,6 +178,7 @@ class EDTItem(BaseModel):
     costo_soles: float
     fuente_estimacion: str
     depende_de: str
+    ejecucion_hijos: str
 
 
 class EDTResult(BaseModel):
@@ -199,6 +204,35 @@ def _calcular_dependencias(items: list[dict]) -> None:
         ultimo_hijo_de[padre] = codigo
 
 
+def _calcular_rollup(items: list[dict]) -> None:
+    """
+    Recalcula duracion_dias y costo_soles de los nodos con hijos (Fase/Entregable) a partir de
+    sus hijos directos, en vez de confiar en que el modelo los sume bien. El costo siempre se
+    suma (es aditivo sin importar el paralelismo); la duración se suma si "ejecucion_hijos" es
+    "secuencial" y se toma el máximo si es "paralelo" — sin esto, una fase con entregables que
+    corren al mismo tiempo (ej. soporte + reportes mensuales + servicio continuo durante los
+    mismos 24 meses) sumaría sus duraciones como si fueran secuenciales y triplicaría el total.
+    """
+    por_codigo = {it["codigo"]: it for it in items}
+    hijos_de: dict[str, list[str]] = {}
+    for it in items:
+        codigo = it["codigo"]
+        if "." in codigo:
+            padre = codigo.rsplit(".", 1)[0]
+            hijos_de.setdefault(padre, []).append(codigo)
+
+    # de más profundo a menos profundo, para que un padre ya tenga a sus hijos recalculados
+    for codigo in sorted(por_codigo, key=_clave_codigo, reverse=True):
+        hijos = hijos_de.get(codigo)
+        if not hijos:
+            continue  # nodo hoja: se conserva la estimación del modelo
+        nodo = por_codigo[codigo]
+        duraciones = [por_codigo[h]["duracion_dias"] for h in hijos]
+        nodo["costo_soles"] = sum(por_codigo[h]["costo_soles"] for h in hijos)
+        nodo["duracion_dias"] = max(duraciones) if nodo.get("ejecucion_hijos") == "paralelo" else sum(duraciones)
+        nodo["fuente_estimacion"] = f"Rollup de hijos ({nodo.get('ejecucion_hijos') or 'secuencial'})"
+
+
 def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
     """Genera un EDT/WBS con tiempos y costos a partir del TDR, cruzándolo con base_conocimientos.json."""
     client = _get_client()
@@ -221,5 +255,6 @@ def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
     resultado: EDTResult = response.parsed
     items = [item.model_dump() for item in resultado.items]
     items.sort(key=lambda it: _clave_codigo(it["codigo"]))
+    _calcular_rollup(items)
     _calcular_dependencias(items)
     return items
