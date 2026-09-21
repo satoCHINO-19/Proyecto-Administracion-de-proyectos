@@ -154,7 +154,7 @@ items = st.session_state.get("items")
 
 if items:
     df = pd.DataFrame(items)
-    for col in ["tipo", "se_acoge", "alerta"]:
+    for col in ["tipo", "se_acoge", "alerta", "alcance", "consulta_ref", "motivo_pendiente"]:
         if col not in df.columns:
             df[col] = ""
 
@@ -173,7 +173,7 @@ if items:
         (c1, n_cumple, "Cumple", GREEN),
         (c2, n_parcial, "Parcial", AMBER),
         (c3, n_no_cumple, "No cumple", RED),
-        (c4, n_no_evid, "No evidenciado", GRAY),
+        (c4, n_no_evid, "Pendiente", GRAY),
     ]
     for col, num, label, color in stats:
         col.markdown(
@@ -221,7 +221,7 @@ if items:
         m = re.search(r"Consulta\s+\d+(\s*y\s*\d+)?", str(row.get("consulta", "")))
         consulta_tag = ""
         if row["se_acoge"] != "N/A":
-            etiqueta = m.group(0) if m else "Consulta"
+            etiqueta = row.get("consulta_ref") or (m.group(0) if m else "Consulta")
             consulta_tag = f'<span class="badge" style="color:{AMBER};background:{AMBER_BG};margin-right:6px;">{html.escape(etiqueta)}</span>'
 
         alerta_html = ""
@@ -243,9 +243,11 @@ if items:
                   {consulta_tag}
                   <span class="badge" style="color:{tipo_c};background:{tipo_bg};">{html.escape(str(row['tipo']) or 'Sin tipo')}</span>
                   <span class="badge" style="color:{acoge_c};background:{acoge_bg};">{html.escape(str(row['se_acoge']))}</span>
+                  {f'<span class="badge" style="color:{MUTED};background:{GRAY_BG};">Alcance: {html.escape(str(row["alcance"]))}</span>' if row['alcance'] else ''}
                 </div>
                 <div style="text-align:right; min-width:150px;">
-                  <span class="badge" style="color:{cumple_c};background:{cumple_bg};">{html.escape(str(row['cumple']))}</span>
+                  <span class="badge" style="color:{cumple_c};background:{cumple_bg};">{'PENDIENTE' if row['cumple'] == 'SIN_EVALUAR' else html.escape(str(row['cumple']))}</span>
+                  {f'<div style="font-size:11.5px;color:{MUTED};margin-top:4px;">{html.escape(str(row["motivo_pendiente"]))}</div>' if row['motivo_pendiente'] else ''}
                 </div>
               </div>
               {alerta_html}
@@ -274,8 +276,8 @@ if items:
     # ------------------------------------------------------------ descarga
     buffer = io.BytesIO()
     columnas_orden = [
-        "item", "tipo", "requisito_tdr", "consulta", "se_acoge",
-        "requisito_efectivo", "propuesta_extracto", "cumple", "alerta", "justificacion",
+        "item", "tipo", "alcance", "requisito_tdr", "consulta_ref", "consulta", "se_acoge",
+        "requisito_efectivo", "propuesta_extracto", "cumple", "motivo_pendiente", "alerta", "justificacion",
     ]
     df_export = df[[c for c in columnas_orden if c in df.columns]]
     df_export.to_excel(buffer, index=False, sheet_name="Checklist")

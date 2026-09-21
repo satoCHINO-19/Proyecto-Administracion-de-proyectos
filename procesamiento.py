@@ -51,7 +51,18 @@ de proyecto, cronograma, actas de reunión o capacitaciones, clasificándolos co
 "días calendario" o "días hábiles" tal como lo dice el documento fuente — nunca dejes "días" \
 ambiguo sin precisar el tipo.
 
-3. Revisa si alguna consulta modifica o aclara el requerimiento:
+   Además, indica en "alcance" si el requerimiento pertenece al "Producto" (el bien o servicio \
+técnico que se entrega: equipos, funcionalidades, niveles de servicio) o al "Proyecto" (la gestión \
+y los entregables para ejecutarlo: plan de trabajo, cronograma, informes, actas, capacitaciones, \
+personal clave, plazos de ejecución). Todo requerimiento de tipo "Gestión de Proyecto" es de alcance \
+"Proyecto".
+
+3. Revisa si alguna consulta modifica o aclara el requerimiento. VINCULACIÓN CONSULTA–ÍTEM: una \
+consulta se asocia a un ítem solo si la pregunta del postor hace referencia explícita a ese \
+numeral/sección del TDR o trata exactamente sobre esa exigencia; no asocies consultas por mera \
+similitud de tema. Si varias consultas afectan el mismo ítem, considera todas.
+   - En "consulta_ref" pon la identificación de la(s) consulta(s) asociada(s) tal como figura en el \
+documento (ej.: "Consulta 12" o "Consulta 12 y 15"), o cadena vacía si no hay ninguna.
    - Copia en "se_acoge" el valor literal del campo Estado de esa consulta ("Se acoge", \
 "No se acoge", "Se acoge parcialmente"). Si no hay consulta asociada, usa "N/A".
    - En "consulta", si el estado es "No se acoge", redacta explícitamente qué condición del TDR \
@@ -66,8 +77,16 @@ la "prestación del servicio" y no a la "integración" o instalación), dilo exp
 4. Busca en la propuesta el fragmento que responde a ese requisito efectivo y cópialo en \
 "propuesta_extracto".
 
-5. Evalúa "cumple": CUMPLE, NO CUMPLE, CUMPLE PARCIALMENTE, o SIN_EVALUAR si falta información, \
-citando en "justificacion" el texto concreto que sustenta tu evaluación.
+5. Evalúa "cumple": CUMPLE, NO CUMPLE, CUMPLE PARCIALMENTE, o SIN_EVALUAR (estado "pendiente") solo \
+si realmente no se puede concluir, citando en "justificacion" el texto concreto que sustenta tu \
+evaluación. Si una propuesta existe y responde al requisito con evidencia clara, NO uses SIN_EVALUAR. \
+Cuando uses SIN_EVALUAR, indica en "motivo_pendiente" exactamente uno de estos valores: \
+"Falta propuesta" (no se recibió el documento de propuesta), "Sin evidencia en la propuesta" (hay \
+propuesta pero no menciona el requisito; en ese caso lo correcto suele ser NO CUMPLE si el requisito \
+es obligatorio, usa pendiente solo si es facultativo o ambiguo), "Requiere verificación externa" \
+(depende de documentos no incluidos, ej. anexos, certificados o contratos) o "Requisito ambiguo" \
+(el TDR o la consulta no permiten fijar el criterio). Si "cumple" no es SIN_EVALUAR, deja \
+"motivo_pendiente" vacío.
 
 6. Calcula "alerta" comparando cifras o plazos entre TDR, consulta y propuesta:
    - "MEJORA" si la propuesta ofrece una condición más favorable para la entidad que el mínimo \
@@ -89,11 +108,14 @@ class ChecklistItem(BaseModel):
     item: str
     tipo: str
     requisito_tdr: str
+    alcance: str
+    consulta_ref: str
     consulta: str
     se_acoge: str
     requisito_efectivo: str
     propuesta_extracto: str
     cumple: str
+    motivo_pendiente: str
     alerta: str
     justificacion: str
 
@@ -318,8 +340,16 @@ costos y duraciones típicas de referencia (en JSON).
 
 Tu tarea es construir la Estructura de Desglose del Trabajo (EDT/WBS) del proyecto:
 
-1. Descompón el alcance del TDR en una jerarquía de máximo 3 niveles: Fase (nivel 1), \
-Entregable (nivel 2) y Actividad (nivel 3). Usa códigos tipo "1", "1.1", "1.1.1".
+1. Identifica primero los DOS alcances del TDR: el alcance del PRODUCTO (el bien o servicio \
+técnico a entregar) y el alcance del PROYECTO (gestión del proyecto y entregables requeridos: \
+plan de trabajo, cronograma, informes, actas, capacitaciones, cierre). Luego descompón todo en una \
+jerarquía de máximo 3 niveles: Fase/Entregable mayor (nivel 1), Entregable (nivel 2) y Actividad \
+(nivel 3). Usa códigos tipo "1", "1.1", "1.1.1". Agrupa los entregables del proyecto bajo \
+entregables mayores (por ejemplo "Gestión del Proyecto", "Implementación", "Operación y soporte", \
+"Cierre") e integra dentro de ellos los entregables del producto, de modo que la EDT cubra ambos \
+alcances en una sola estructura (100% del alcance, sin duplicar). En el campo "tipo" de cada nodo \
+indica si es de alcance "Proyecto" o "Producto" además del nivel (Fase, Entregable, Actividad), \
+con el formato "Fase · Proyecto", "Entregable · Producto", etc.
 2. Para cada nodo HOJA (el que no tiene hijos propios, normalmente una Actividad), estima \
 "duracion_dias" (días calendario) y "costo_soles":
    - Si el nodo se parece a un entregable de la base de conocimientos, usa ese valor de \
