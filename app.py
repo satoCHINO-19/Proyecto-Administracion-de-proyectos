@@ -6,7 +6,7 @@ import pandas as pd
 import streamlit as st
 from dotenv import load_dotenv
 
-from procesamiento import generar_edt, procesar_checklist
+from procesamiento import generar_alcances, generar_edt, procesar_checklist
 
 load_dotenv()
 
@@ -299,11 +299,32 @@ if items:
     if st.session_state.get("tdr_bytes") and st.button("Generar EDT/WBS"):
         with st.spinner("Generando EDT/WBS con Gemini..."):
             try:
-                st.session_state["edt_items"] = generar_edt(
+                alcances = generar_alcances(
                     st.session_state["tdr_bytes"], st.session_state["tdr_nombre"]
+                )
+                st.session_state["alcances"] = alcances
+                st.session_state["edt_items"] = generar_edt(
+                    st.session_state["tdr_bytes"], st.session_state["tdr_nombre"], alcances
                 )
             except Exception as e:
                 st.error(f"Ocurrió un error generando el EDT: {e}")
+
+    alcances = st.session_state.get("alcances")
+    if alcances:
+        st.markdown("#### Alcance del producto y del proyecto")
+        ac1, ac2 = st.columns(2)
+        for col, titulo, resumen, elementos in [
+            (ac1, "Alcance del producto", alcances["resumen_producto"], alcances["entregables_producto"]),
+            (ac2, "Alcance del proyecto (gestión y entregables)", alcances["resumen_proyecto"], alcances["entregables_proyecto"]),
+        ]:
+            with col:
+                st.markdown(f"**{titulo}**")
+                st.write(resumen)
+                for el in elementos:
+                    st.markdown(
+                        f"- **{html.escape(el['nombre'])}** ({html.escape(el['referencia_tdr'])}): "
+                        f"{html.escape(el['descripcion'])}"
+                    )
 
     edt_items = st.session_state.get("edt_items")
     if edt_items:

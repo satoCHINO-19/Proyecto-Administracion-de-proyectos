@@ -340,16 +340,11 @@ costos y duraciones típicas de referencia (en JSON).
 
 Tu tarea es construir la Estructura de Desglose del Trabajo (EDT/WBS) del proyecto:
 
-1. Identifica primero los DOS alcances del TDR: el alcance del PRODUCTO (el bien o servicio \
-técnico a entregar) y el alcance del PROYECTO (gestión del proyecto y entregables requeridos: \
-plan de trabajo, cronograma, informes, actas, capacitaciones, cierre). Luego descompón todo en una \
-jerarquía de máximo 3 niveles: Fase/Entregable mayor (nivel 1), Entregable (nivel 2) y Actividad \
-(nivel 3). Usa códigos tipo "1", "1.1", "1.1.1". Agrupa los entregables del proyecto bajo \
-entregables mayores (por ejemplo "Gestión del Proyecto", "Implementación", "Operación y soporte", \
-"Cierre") e integra dentro de ellos los entregables del producto, de modo que la EDT cubra ambos \
-alcances en una sola estructura (100% del alcance, sin duplicar). En el campo "tipo" de cada nodo \
-indica si es de alcance "Proyecto" o "Producto" además del nivel (Fase, Entregable, Actividad), \
-con el formato "Fase · Proyecto", "Entregable · Producto", etc.
+1. Te doy abajo el ALCANCE DEL PRODUCTO y el ALCANCE DEL PROYECTO ya identificados en el TDR. La EDT debe cubrir TODOS los elementos de ambos, sin omitir ni duplicar ninguno. Estructura: los nodos de nivel 1 son los ENTREGABLES MAYORES del proyecto (por ejemplo "Gestión del Proyecto", "Implementación", "Operación y soporte", "Cierre"); agrupa bajo cada uno los entregables del PROYECTO que le corresponden (plan de trabajo, cronograma, informes, actas, capacitaciones) e INTEGRA dentro del mismo entregable mayor los entregables del PRODUCTO que le corresponden (por ejemplo, el servicio o los equipos bajo "Implementación" u "Operación"), como ramas hermanas en el mismo árbol. Prohibido crear fases separadas "solo de producto" y "solo de proyecto": cada entregable mayor debe mezclar lo que sea pertinente de ambos alcances. Jerarquía de máximo 3 niveles: entregable mayor (nivel 1), entregable (nivel 2) y actividad (nivel 3), con códigos "1", "1.1", "1.1.1". En "tipo" indica nivel y alcance: los nodos de nivel 1 son siempre "Fase · Proyecto"; los demás "Entregable · Producto", "Entregable · Proyecto", "Actividad · Producto" o "Actividad · Proyecto".
+
+Alcances identificados (JSON):
+{alcances}
+
 2. Para cada nodo HOJA (el que no tiene hijos propios, normalmente una Actividad), estima \
 "duracion_dias" (días calendario) y "costo_soles":
    - Si el nodo se parece a un entregable de la base de conocimientos, usa ese valor de \
@@ -435,15 +430,54 @@ def _calcular_rollup(items: list[dict]) -> None:
         nodo["fuente_estimacion"] = f"Rollup de hijos ({nodo.get('ejecucion_hijos') or 'secuencial'})"
 
 
-def generar_edt(tdr_bytes: bytes, tdr_nombre: str) -> list[dict]:
+PROMPT_ALCANCES = """Eres un analista de contrataciones del Estado peruano. Basándote únicamente en el TDR (Términos de Referencia) que te doy, identifica:
+
+1. ALCANCE DEL PRODUCTO: el bien o servicio técnico que se debe entregar (equipos, funcionalidades, niveles de servicio, cantidades). Redacta un resumen breve y lista cada elemento como entregable del producto, con su descripción y la referencia (numeral del TDR).
+2. ALCANCE DEL PROYECTO: la gestión del proyecto y los entregables requeridos para ejecutarlo (plan de trabajo, cronograma, informes, actas, capacitaciones, personal clave, garantías, liquidación y cierre). Redacta un resumen breve y lista cada entregable de gestión con su descripción y referencia.
+
+No mezcles: un elemento va en el producto o en el proyecto, no en ambos. Sé exhaustivo con lo que el TDR exige explícitamente."""
+
+
+class ElementoAlcance(BaseModel):
+    nombre: str
+    descripcion: str
+    referencia_tdr: str
+
+
+class AlcancesResult(BaseModel):
+    resumen_producto: str
+    entregables_producto: list[ElementoAlcance]
+    resumen_proyecto: str
+    entregables_proyecto: list[ElementoAlcance]
+
+
+def generar_alcances(tdr_bytes: bytes, tdr_nombre: str) -> dict:
+    """Identifica el alcance del producto y el alcance del proyecto a partir del TDR."""
+    client = _get_client()
+    with tempfile.TemporaryDirectory() as tmp_dir:
+        contents = _subir_documentos(client, {"TDR": [tdr_bytes]}, {"TDR": [tdr_nombre]}, tmp_dir)
+        contents.append(PROMPT_ALCANCES)
+        response = _generar_con_reintento(
+            client, model=MODEL, contents=contents,
+            config={"response_mime_type": "application/json", "response_schema": AlcancesResult},
+        )
+    return response.parsed.model_dump()
+
+
+def generar_edt(tdr_bytes: bytes, tdr_nombre: str, alcances: dict | None = None) -> list[dict]:
     """Genera un EDT/WBS con tiempos y costos a partir del TDR, cruzándolo con base_conocimientos.json."""
+    if alcances is None:
+        alcances = generar_alcances(tdr_bytes, tdr_nombre)
     client = _get_client()
     with open(BASE_CONOCIMIENTOS_PATH, "r", encoding="utf-8") as f:
         base_conocimientos = f.read()
 
     with tempfile.TemporaryDirectory() as tmp_dir:
         contents = _subir_documentos(client, {"TDR": [tdr_bytes]}, {"TDR": [tdr_nombre]}, tmp_dir)
-        contents.append(PROMPT_EDT.format(base_conocimientos=base_conocimientos))
+        contents.append(PROMPT_EDT.format(
+            base_conocimientos=base_conocimientos,
+            alcances=json.dumps(alcances, ensure_ascii=False, indent=1),
+        ))
 
         response = _generar_con_reintento(
             client,
