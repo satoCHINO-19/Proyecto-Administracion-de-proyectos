@@ -334,37 +334,73 @@ def procesar_checklist(
 
 BASE_CONOCIMIENTOS_PATH = os.path.join(os.path.dirname(__file__), "base_conocimientos.json")
 
-PROMPT_EDT = """Eres un especialista en gestión de proyectos. Te doy el TDR (Términos de \
-Referencia) de un proceso de contratación del Estado peruano y una base de conocimientos con \
-costos y duraciones típicas de referencia (en JSON).
+PROMPT_EDT = """Eres un Project Manager certificado por el PMI (PMP). Aplica los lineamientos de \
+la Guía del PMBOK (versión 8) del PMI para construir la Estructura de Desglose del Trabajo \
+(EDT/WBS) del proyecto, a partir del TDR (Términos de Referencia) de un proceso de contratación \
+del Estado peruano que te doy, y del alcance del producto y del alcance del proyecto ya \
+identificados (JSON abajo).
 
-Tu tarea es construir la Estructura de Desglose del Trabajo (EDT/WBS) del proyecto:
+REGLAS DE LA EDT (PMBOK) — de cumplimiento obligatorio:
 
-1. Te doy abajo el ALCANCE DEL PRODUCTO y el ALCANCE DEL PROYECTO ya identificados en el TDR. La EDT debe cubrir TODOS los elementos de ambos, sin omitir ni duplicar ninguno. Estructura: los nodos de nivel 1 son los ENTREGABLES MAYORES del proyecto (por ejemplo "Gestión del Proyecto", "Implementación", "Operación y soporte", "Cierre"); agrupa bajo cada uno los entregables del PROYECTO que le corresponden (plan de trabajo, cronograma, informes, actas, capacitaciones) e INTEGRA dentro del mismo entregable mayor los entregables del PRODUCTO que le corresponden (por ejemplo, el servicio o los equipos bajo "Implementación" u "Operación"), como ramas hermanas en el mismo árbol. Prohibido crear fases separadas "solo de producto" y "solo de proyecto": cada entregable mayor debe mezclar lo que sea pertinente de ambos alcances. Jerarquía de máximo 3 niveles: entregable mayor (nivel 1), entregable (nivel 2) y actividad (nivel 3), con códigos "1", "1.1", "1.1.1". En "tipo" indica nivel y alcance: los nodos de nivel 1 son siempre "Fase · Proyecto"; los demás "Entregable · Producto", "Entregable · Proyecto", "Actividad · Producto" o "Actividad · Proyecto".
+1. SOLO ENTREGABLES, nunca actividades ni tareas: cada nodo de la EDT es un entregable o \
+componente de entregable verificable (un documento, un servicio, un conjunto de equipos \
+instalados). Nunca un verbo de acción ni una tarea del equipo (esas van aparte, en \
+"actividades", ver el punto 6).
+2. ALTO NIVEL, SIN HIPERDETALLE: la EDT debe ser comprensible para la gerencia. No incluyas \
+características técnicas puntuales del producto (cantidades exactas de GB, medidas en cm/mm, \
+modelos específicos) como si fueran nodos — eso es detalle de especificación, no de entregable.
+3. PROHIBIDA LA DESCOMPOSICIÓN 1 A 1: ningún nodo puede tener un solo hijo. Todo nodo que se \
+descompone debe tener como mínimo 2 hijos; si un entregable no amerita dividirse en 2 o más \
+partes, déjalo como nodo hoja.
+4. REGLA DEL 100%: la EDT debe capturar exactamente la totalidad del alcance (ni más ni menos), \
+sin omitir ni duplicar nada de los alcances de producto y de proyecto que te doy abajo.
+5. CODIFICACIÓN JERÁRQUICA ÚNICA: usa códigos tipo "1", "1.1", "1.1.1" — cada nivel identifica \
+de forma única su posición en el árbol.
+6. INTEGRACIÓN DE AMBOS ALCANCES: los nodos de nivel 1 son ENTREGABLES MAYORES del proyecto \
+(por ejemplo "Gestión del Proyecto", "Implementación", "Operación y soporte", "Cierre"). Bajo \
+cada uno, agrupa los entregables del PROYECTO que le correspondan (plan de trabajo, cronograma, \
+informes, actas, capacitaciones) e INTEGRA como ramas hermanas los entregables del PRODUCTO que \
+le correspondan (por ejemplo, el servicio o los equipos bajo "Implementación" u "Operación"). \
+Prohibido crear entregables mayores "solo de producto" o "solo de proyecto": cada uno debe \
+mezclar lo que sea pertinente de ambos alcances. Máximo 3 niveles de entregables (nivel 1, \
+nivel 2 y, si hace falta, nivel 3). En "tipo" indica nivel y alcance del entregable: \
+"Entregable mayor · Proyecto", "Entregable · Producto", "Entregable · Proyecto", etc. (nunca \
+"Actividad" — ese concepto no existe como nodo de la EDT).
 
 Alcances identificados (JSON):
 {alcances}
 
-2. Para cada nodo HOJA (el que no tiene hijos propios, normalmente una Actividad), estima \
-"duracion_dias" (días calendario) y "costo_soles":
-   - Si el nodo se parece a un entregable de la base de conocimientos, usa ese valor de \
+6. PASO A CRONOGRAMA (fuera de la EDT): para cada entregable HOJA (el que no se descompone en \
+más entregables), define en "actividades" el esfuerzo del equipo para producirlo — 2 o más \
+actividades concretas si el entregable lo amerita, o 1 sola si es un esfuerzo simple. Cada \
+actividad lleva "duracion_dias" (días calendario) y "costo_soles":
+   - Si la actividad se parece a un entregable de la base de conocimientos, usa ese valor de \
 referencia (ajustándolo si el alcance del TDR es claramente mayor o menor) y cita en \
 "fuente_estimacion" el nombre exacto del entregable de referencia que usaste.
-   - Si no hay nada parecido en la base de conocimientos, estima tú mismo un valor razonable \
-y escribe en "fuente_estimacion" "Estimado por IA (sin referencia en base de conocimientos)".
-3. Para cada nodo que SÍ tiene hijos (Fase o Entregable), deja "duracion_dias" y "costo_soles" \
-en 0 y "fuente_estimacion" vacía — se calculan automáticamente sumando a sus hijos. En su lugar, \
-indica en "ejecucion_hijos" si sus hijos directos se ejecutan "secuencial" (uno después de que \
-termina el anterior) o "paralelo" (al mismo tiempo, por ejemplo actividades de soporte, reportes \
-mensuales y prestación continua del servicio que ocurren simultáneamente durante toda la vigencia \
-del contrato). En los nodos hoja deja "ejecucion_hijos" como cadena vacía.
-4. Dejar "depende_de" como cadena vacía — la dependencia entre nodos se calcula \
+   - Si no hay nada parecido en la base de conocimientos, estima tú mismo un valor razonable y \
+escribe en "fuente_estimacion" "Estimado por IA (sin referencia en base de conocimientos)".
+   Indica también en "ejecucion_hijos" del entregable hoja si sus actividades corren \
+"secuencial" o "paralelo".
+7. Para cada entregable que SÍ tiene hijos (nivel 1 o 2 con sub-entregables), deja \
+"actividades" como lista vacía, "duracion_dias"/"costo_soles" en 0 — se calculan \
+automáticamente sumando a sus hijos — e indica en "ejecucion_hijos" si sus hijos directos se \
+ejecutan "secuencial" (uno después de que termina el anterior) o "paralelo" (al mismo tiempo, \
+por ejemplo soporte, reportes mensuales y prestación continua del servicio que ocurren \
+simultáneamente durante toda la vigencia del contrato).
+8. Dejar "depende_de" como cadena vacía — la dependencia entre nodos se calcula \
 automáticamente después, a partir del orden de los códigos.
 
 Base de conocimientos (JSON de referencia):
 {base_conocimientos}
 
 Devuelve la jerarquía completa cubriendo todo el alcance del TDR, no solo un resumen."""
+
+
+class ActividadItem(BaseModel):
+    nombre: str
+    duracion_dias: float
+    costo_soles: float
+    fuente_estimacion: str
 
 
 class EDTItem(BaseModel):
@@ -376,6 +412,7 @@ class EDTItem(BaseModel):
     fuente_estimacion: str
     depende_de: str
     ejecucion_hijos: str
+    actividades: list[ActividadItem]
 
 
 class EDTResult(BaseModel):
@@ -403,12 +440,15 @@ def _calcular_dependencias(items: list[dict]) -> None:
 
 def _calcular_rollup(items: list[dict]) -> None:
     """
-    Recalcula duracion_dias y costo_soles de los nodos con hijos (Fase/Entregable) a partir de
-    sus hijos directos, en vez de confiar en que el modelo los sume bien. El costo siempre se
-    suma (es aditivo sin importar el paralelismo); la duración se suma si "ejecucion_hijos" es
-    "secuencial" y se toma el máximo si es "paralelo" — sin esto, una fase con entregables que
-    corren al mismo tiempo (ej. soporte + reportes mensuales + servicio continuo durante los
-    mismos 24 meses) sumaría sus duraciones como si fueran secuenciales y triplicaría el total.
+    Recalcula duracion_dias y costo_soles de todos los entregables a partir de sus componentes,
+    en vez de confiar en que el modelo los sume bien. El costo siempre se suma (es aditivo sin
+    importar el paralelismo); la duración se suma si "ejecucion_hijos" es "secuencial" y se toma
+    el máximo si es "paralelo" — sin esto, un entregable con componentes que corren al mismo
+    tiempo (ej. soporte + reportes mensuales + servicio continuo durante los mismos 24 meses)
+    sumaría sus duraciones como si fueran secuenciales y triplicaría el total.
+
+    Primero resuelve los entregables hoja a partir de sus "actividades" (el cronograma, fuera de
+    la EDT propiamente dicha), y luego los entregables con sub-entregables a partir de sus hijos.
     """
     por_codigo = {it["codigo"]: it for it in items}
     hijos_de: dict[str, list[str]] = {}
@@ -418,16 +458,57 @@ def _calcular_rollup(items: list[dict]) -> None:
             padre = codigo.rsplit(".", 1)[0]
             hijos_de.setdefault(padre, []).append(codigo)
 
+    for nodo in items:
+        if nodo["codigo"] in hijos_de:
+            continue  # tiene sub-entregables: se resuelve en la segunda pasada
+        actividades = nodo.get("actividades") or []
+        if not actividades:
+            continue  # ya trae duracion_dias/costo_soles propios del modelo
+        duraciones = [a["duracion_dias"] for a in actividades]
+        nodo["costo_soles"] = sum(a["costo_soles"] for a in actividades)
+        nodo["duracion_dias"] = max(duraciones) if nodo.get("ejecucion_hijos") == "paralelo" else sum(duraciones)
+        nodo["fuente_estimacion"] = f"Suma de {len(actividades)} actividad(es) del cronograma"
+
     # de más profundo a menos profundo, para que un padre ya tenga a sus hijos recalculados
     for codigo in sorted(por_codigo, key=_clave_codigo, reverse=True):
         hijos = hijos_de.get(codigo)
         if not hijos:
-            continue  # nodo hoja: se conserva la estimación del modelo
+            continue  # nodo hoja: ya resuelto arriba a partir de sus actividades
         nodo = por_codigo[codigo]
         duraciones = [por_codigo[h]["duracion_dias"] for h in hijos]
         nodo["costo_soles"] = sum(por_codigo[h]["costo_soles"] for h in hijos)
         nodo["duracion_dias"] = max(duraciones) if nodo.get("ejecucion_hijos") == "paralelo" else sum(duraciones)
         nodo["fuente_estimacion"] = f"Rollup de hijos ({nodo.get('ejecucion_hijos') or 'secuencial'})"
+
+
+def _validar_estructura(items: list[dict]) -> list[str]:
+    """
+    Señala violaciones a la regla PMBOK de "prohibida la descomposición 1 a 1": todo nodo que se
+    descompone debe tener 2 o más hijos (o 2 o más actividades, en el caso de un entregable hoja).
+    No se corrige solo — fusionar nodos requiere criterio humano — pero se reporta para revisión.
+    """
+    hijos_de: dict[str, list[str]] = {}
+    for it in items:
+        codigo = it["codigo"]
+        if "." in codigo:
+            padre = codigo.rsplit(".", 1)[0]
+            hijos_de.setdefault(padre, []).append(codigo)
+
+    advertencias = []
+    for it in items:
+        codigo = it["codigo"]
+        n_hijos = len(hijos_de.get(codigo, []))
+        if n_hijos == 1:
+            advertencias.append(
+                f"{codigo} ({it['nombre']}) tiene un solo sub-entregable — revisa si conviene fusionarlo."
+            )
+        elif n_hijos == 0:
+            n_act = len(it.get("actividades") or [])
+            if n_act == 1:
+                advertencias.append(
+                    f"{codigo} ({it['nombre']}) tiene una sola actividad en el cronograma — revisa si conviene fusionarla o dividirla."
+                )
+    return advertencias
 
 
 PROMPT_ALCANCES = """Eres un analista de contrataciones del Estado peruano. Basándote únicamente en el TDR (Términos de Referencia) que te doy, identifica:
@@ -464,8 +545,13 @@ def generar_alcances(tdr_bytes: bytes, tdr_nombre: str) -> dict:
     return response.parsed.model_dump()
 
 
-def generar_edt(tdr_bytes: bytes, tdr_nombre: str, alcances: dict | None = None) -> list[dict]:
-    """Genera un EDT/WBS con tiempos y costos a partir del TDR, cruzándolo con base_conocimientos.json."""
+def generar_edt(
+    tdr_bytes: bytes, tdr_nombre: str, alcances: dict | None = None
+) -> tuple[list[dict], list[str]]:
+    """
+    Genera un EDT/WBS (solo entregables, con su cronograma de actividades por hoja) a partir del
+    TDR, cruzándolo con base_conocimientos.json. Devuelve (items, advertencias_estructura).
+    """
     if alcances is None:
         alcances = generar_alcances(tdr_bytes, tdr_nombre)
     client = _get_client()
@@ -494,4 +580,4 @@ def generar_edt(tdr_bytes: bytes, tdr_nombre: str, alcances: dict | None = None)
     items.sort(key=lambda it: _clave_codigo(it["codigo"]))
     _calcular_rollup(items)
     _calcular_dependencias(items)
-    return items
+    return items, _validar_estructura(items)

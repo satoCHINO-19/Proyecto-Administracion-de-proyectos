@@ -303,9 +303,11 @@ if items:
                     st.session_state["tdr_bytes"], st.session_state["tdr_nombre"]
                 )
                 st.session_state["alcances"] = alcances
-                st.session_state["edt_items"] = generar_edt(
+                edt_items, edt_advertencias = generar_edt(
                     st.session_state["tdr_bytes"], st.session_state["tdr_nombre"], alcances
                 )
+                st.session_state["edt_items"] = edt_items
+                st.session_state["edt_advertencias"] = edt_advertencias
             except Exception as e:
                 st.error(f"Ocurrió un error generando el EDT: {e}")
 
@@ -345,6 +347,19 @@ if items:
             unsafe_allow_html=True,
         )
 
+        edt_advertencias = st.session_state.get("edt_advertencias") or []
+        if edt_advertencias:
+            st.markdown(
+                '<div style="border:1px solid {c};background:{bg};border-radius:8px;padding:10px 14px;">'
+                '<strong style="color:{c};">Revisar estructura de la EDT (regla PMBOK: mínimo 2 hijos)</strong>'
+                '</div>'.format(c=AMBER, bg=AMBER_BG),
+                unsafe_allow_html=True,
+            )
+            for adv in edt_advertencias:
+                st.caption(f"⚠ {adv}")
+
+        st.caption("La EDT contiene solo entregables. El esfuerzo del equipo (actividades) se muestra como cronograma dentro de cada entregable hoja.")
+
         # ya viene ordenado numéricamente por jerarquía desde generar_edt(); un sort_values("codigo")
         # aquí ordenaría como texto ("1.10" antes de "1.2") y rompería la jerarquía.
         for _, row in df_edt.iterrows():
@@ -369,11 +384,26 @@ if items:
                 </div>
                 """
             )
+            actividades = row.get("actividades") or []
+            if actividades:
+                with st.expander(f"Cronograma de {row['codigo']} ({len(actividades)} actividad{'es' if len(actividades) != 1 else ''})"):
+                    for act in actividades:
+                        st.markdown(
+                            f"- **{html.escape(act['nombre'])}** — {act['duracion_dias']:.0f} días · "
+                            f"S/ {act['costo_soles']:,.0f} · _{html.escape(act['fuente_estimacion'])}_"
+                        )
 
         buffer_edt = io.BytesIO()
-        df_edt.to_excel(buffer_edt, index=False, sheet_name="EDT_WBS")
+        with pd.ExcelWriter(buffer_edt, engine="openpyxl") as writer:
+            df_edt.drop(columns=["actividades"]).to_excel(writer, index=False, sheet_name="EDT")
+            filas_cronograma = [
+                {"codigo_entregable": it["codigo"], "entregable": it["nombre"], **act}
+                for it in edt_items
+                for act in (it.get("actividades") or [])
+            ]
+            pd.DataFrame(filas_cronograma).to_excel(writer, index=False, sheet_name="Cronograma")
         st.download_button(
-            "Descargar EDT/WBS en Excel",
+            "Descargar EDT/WBS y cronograma en Excel",
             data=buffer_edt.getvalue(),
             file_name="edt_wbs.xlsx",
             mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
