@@ -19,14 +19,14 @@ def _generar_con_reintento(client: genai.Client, **kwargs):
     varios tramos: con más llamadas, la probabilidad de toparse con un 503 pasajero en alguna
     de ellas sube, y antes bastaba con que fallara una sola para perder todo el resultado.
     """
-    intentos = 3
+    intentos = 5
     for intento in range(intentos):
         try:
             return client.models.generate_content(**kwargs)
         except genai_errors.ServerError:
             if intento == intentos - 1:
                 raise
-            time.sleep(5 * (intento + 1))
+            time.sleep(min(60, 5 * 2**intento))
 
 TIPOS_VALIDOS = ["Técnico", "Administrativo", "Económico", "Plazo", "Perfil profesional", "Gestión de Proyecto"]
 
