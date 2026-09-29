@@ -140,17 +140,37 @@ if archivos and st.button("Procesar", type="primary"):
     with st.spinner("Subiendo archivos y generando checklist con Gemini... puede tardar un poco con PDFs grandes"):
         try:
             items = procesar_checklist(archivos_por_rol, nombres_por_rol, on_progreso=_reportar_progreso)
+            if items:
+                st.session_state["items"] = items
+            else:
+                st.warning("Gemini no devolvió ningún ítem. Revisa que el TDR tenga requerimientos numerados.")
         except Exception as e:
-            st.error(f"Ocurrió un error procesando los documentos: {e}")
-            st.stop()
+            st.error(f"Ocurrió un error procesando el checklist: {e}")
 
     progreso_placeholder.empty()
 
-    if not items:
-        st.warning("Gemini no devolvió ningún ítem. Revisa que el TDR tenga requerimientos numerados.")
-        st.stop()
+    # Un solo clic en "Procesar" corre las tres etapas (checklist, alcance y EDT) para no
+    # obligar a un segundo clic en "Generar EDT/WBS" — cada una con su propio try/except para
+    # que si una falla (p.ej. un 503 de Gemini) las demás igual se intenten.
+    tdr_bytes_run = st.session_state.get("tdr_bytes")
+    tdr_nombre_run = st.session_state.get("tdr_nombre")
+    if tdr_bytes_run:
+        alcances_run = None
+        with st.spinner("Generando alcance del producto y del proyecto con Gemini..."):
+            try:
+                alcances_run = generar_alcances(tdr_bytes_run, tdr_nombre_run)
+                st.session_state["alcances"] = alcances_run
+            except Exception as e:
+                st.error(f"Ocurrió un error generando el alcance: {e}")
 
-    st.session_state["items"] = items
+        if alcances_run:
+            with st.spinner("Generando EDT/WBS con Gemini..."):
+                try:
+                    edt_items_run, edt_advertencias_run = generar_edt(tdr_bytes_run, tdr_nombre_run, alcances_run)
+                    st.session_state["edt_items"] = edt_items_run
+                    st.session_state["edt_advertencias"] = edt_advertencias_run
+                except Exception as e:
+                    st.error(f"Ocurrió un error generando la EDT: {e}")
 
 items = st.session_state.get("items")
 
@@ -329,6 +349,17 @@ if alcances:
                     f"- **{html.escape(el['nombre'])}** ({html.escape(el['referencia_tdr'])}): "
                     f"{html.escape(el['descripcion'])}"
                 )
+
+    buffer_alcances = io.BytesIO()
+    with pd.ExcelWriter(buffer_alcances, engine="openpyxl") as writer:
+        pd.DataFrame(alcances["entregables_producto"]).to_excel(writer, index=False, sheet_name="Alcance_Producto")
+        pd.DataFrame(alcances["entregables_proyecto"]).to_excel(writer, index=False, sheet_name="Alcance_Proyecto")
+    st.download_button(
+        "Descargar alcance (producto y proyecto) en Excel",
+        data=buffer_alcances.getvalue(),
+        file_name="alcance_producto_proyecto.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
 
 edt_items = st.session_state.get("edt_items")
 if edt_items:
