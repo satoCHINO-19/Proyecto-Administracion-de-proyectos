@@ -2,44 +2,23 @@ import io
 import json
 import os
 import tempfile
-import time
 
 import pypdf
 from google import genai
-from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
 MODEL = "gemini-3.6-flash"
-MODEL_RESPALDO = "gemini-flash-lite-latest"
 
 
-def _generar_con_reintento(client: genai.Client, **kwargs):
+def _generar_contenido(client: genai.Client, **kwargs):
     """
-    Reintenta la llamada a Gemini ante errores transitorios del servidor (503 "alta demanda"),
-    con espera creciente entre intentos. Necesario sobre todo cuando el TDR se procesa por
-    varios tramos: con más llamadas, la probabilidad de toparse con un 503 pasajero en alguna
-    de ellas sube, y antes bastaba con que fallara una sola para perder todo el resultado.
-
-    Si el modelo principal sigue caído tras agotar los reintentos, se prueba una vez con
-    MODEL_RESPALDO (más liviano, normalmente con menos demanda) antes de rendirse del todo —
-    mejor un resultado de menor calidad que perder toda la corrida.
-
-    Cada intento (incluido el de respaldo) consume una solicitud real de la cuota diaria del
-    nivel gratuito (20/día), aunque falle con 503 — por eso son pocos intentos: una racha larga
-    de saturación no debe agotar la cuota completa en una sola llamada, dejando nada para el
-    resto de la corrida (checklist, alcance, EDT) ni para que el usuario reintente más tarde.
+    Llama a Gemini una sola vez, sin reintento automático. El nivel gratuito tiene una cuota
+    diaria muy ajustada (20 solicitudes/día) y cada reintento cuenta como una solicitud real
+    aunque falle con 503 — reintentar automáticamente ante una saturación sostenida del servidor
+    solo quema la cuota del día sin mejorar las chances de éxito. Si falla, el error sube tal
+    cual para que el usuario decida cuándo volver a intentarlo (dándole a "Procesar" de nuevo).
     """
-    intentos = 3
-    for intento in range(intentos):
-        try:
-            return client.models.generate_content(**kwargs)
-        except genai_errors.ServerError:
-            if intento < intentos - 1:
-                time.sleep(5 * 2**intento)
-                continue
-            if kwargs.get("model") == MODEL_RESPALDO:
-                raise
-            return client.models.generate_content(**{**kwargs, "model": MODEL_RESPALDO})
+    return client.models.generate_content(**kwargs)
 
 TIPOS_VALIDOS = ["Técnico", "Administrativo", "Económico", "Plazo", "Perfil profesional", "Gestión de Proyecto"]
 
@@ -182,7 +161,7 @@ def _reconciliar_items(client: genai.Client, items: list[dict]) -> list[dict]:
     por_codigo = {it["item"]: it for it in items if it.get("item")}
     resumen = [{"item": it["item"], "requisito_tdr": it.get("requisito_tdr", "")} for it in items]
     contents = [PROMPT_RECONCILIAR.format(items_json=json.dumps(resumen, ensure_ascii=False))]
-    response = _generar_con_reintento(
+    response = _generar_contenido(
         client,
         model=MODEL,
         contents=contents,
@@ -278,7 +257,7 @@ def _procesar_checklist_una_llamada(
         contents = _subir_documentos(client, archivos_por_rol, nombres_por_rol, tmp_dir)
         contents.append(PROMPT)
 
-        response = _generar_con_reintento(
+        response = _generar_contenido(
             client,
             model=MODEL,
             contents=contents,
@@ -551,7 +530,7 @@ def generar_alcances(tdr_bytes: bytes, tdr_nombre: str) -> dict:
     with tempfile.TemporaryDirectory() as tmp_dir:
         contents = _subir_documentos(client, {"TDR": [tdr_bytes]}, {"TDR": [tdr_nombre]}, tmp_dir)
         contents.append(PROMPT_ALCANCES)
-        response = _generar_con_reintento(
+        response = _generar_contenido(
             client, model=MODEL, contents=contents,
             config={"response_mime_type": "application/json", "response_schema": AlcancesResult},
         )
@@ -578,7 +557,7 @@ def generar_edt(
             alcances=json.dumps(alcances, ensure_ascii=False, indent=1),
         ))
 
-        response = _generar_con_reintento(
+        response = _generar_contenido(
             client,
             model=MODEL,
             contents=contents,
