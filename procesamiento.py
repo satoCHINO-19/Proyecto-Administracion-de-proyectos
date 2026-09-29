@@ -10,6 +10,7 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
 MODEL = "gemini-3.6-flash"
+MODEL_RESPALDO = "gemini-flash-lite-latest"
 
 
 def _generar_con_reintento(client: genai.Client, **kwargs):
@@ -18,15 +19,22 @@ def _generar_con_reintento(client: genai.Client, **kwargs):
     con espera creciente entre intentos. Necesario sobre todo cuando el TDR se procesa por
     varios tramos: con más llamadas, la probabilidad de toparse con un 503 pasajero en alguna
     de ellas sube, y antes bastaba con que fallara una sola para perder todo el resultado.
+
+    Si el modelo principal sigue caído tras agotar los reintentos, se prueba una vez con
+    MODEL_RESPALDO (más liviano, normalmente con menos demanda) antes de rendirse del todo —
+    mejor un resultado de menor calidad que perder toda la corrida.
     """
     intentos = 5
     for intento in range(intentos):
         try:
             return client.models.generate_content(**kwargs)
         except genai_errors.ServerError:
-            if intento == intentos - 1:
+            if intento < intentos - 1:
+                time.sleep(min(60, 5 * 2**intento))
+                continue
+            if kwargs.get("model") == MODEL_RESPALDO:
                 raise
-            time.sleep(min(60, 5 * 2**intento))
+            return client.models.generate_content(**{**kwargs, "model": MODEL_RESPALDO})
 
 TIPOS_VALIDOS = ["Técnico", "Administrativo", "Económico", "Plazo", "Perfil profesional", "Gestión de Proyecto"]
 
