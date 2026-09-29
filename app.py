@@ -149,9 +149,9 @@ if archivos and st.button("Procesar", type="primary"):
 
     progreso_placeholder.empty()
 
-    # Un solo clic en "Procesar" corre las tres etapas (checklist, alcance y EDT) para no
-    # obligar a un segundo clic en "Generar EDT/WBS" — cada una con su propio try/except para
-    # que si una falla (p.ej. un 503 de Gemini) las demás igual se intenten.
+    # Un solo clic en "Procesar" corre las tres etapas (checklist, alcance y EDT), cada una
+    # con su propio try/except para que si una falla (p.ej. un 503 de Gemini) las demás igual
+    # se intenten.
     tdr_bytes_run = st.session_state.get("tdr_bytes")
     tdr_nombre_run = st.session_state.get("tdr_nombre")
     if tdr_bytes_run:
@@ -314,24 +314,9 @@ if items:
 st.markdown("---")
 st.subheader("EDT / WBS del proyecto")
 st.caption(
-    "Genera la Estructura de Desglose del Trabajo a partir del TDR, con tiempos y costos "
-    "estimados cruzando la base de conocimientos de referencia (base_conocimientos.json)."
+    "Se genera automáticamente al darle a \"Procesar\" arriba, a partir del TDR y cruzando la "
+    "base de conocimientos de referencia (base_conocimientos.json)."
 )
-
-if st.session_state.get("tdr_bytes") and st.button("Generar EDT/WBS"):
-    with st.spinner("Generando EDT/WBS con Gemini..."):
-        try:
-            alcances = generar_alcances(
-                st.session_state["tdr_bytes"], st.session_state["tdr_nombre"]
-            )
-            st.session_state["alcances"] = alcances
-            edt_items, edt_advertencias = generar_edt(
-                st.session_state["tdr_bytes"], st.session_state["tdr_nombre"], alcances
-            )
-            st.session_state["edt_items"] = edt_items
-            st.session_state["edt_advertencias"] = edt_advertencias
-        except Exception as e:
-            st.error(f"Ocurrió un error generando el EDT: {e}")
 
 alcances = st.session_state.get("alcances")
 if alcances:

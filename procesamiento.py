@@ -23,14 +23,19 @@ def _generar_con_reintento(client: genai.Client, **kwargs):
     Si el modelo principal sigue caído tras agotar los reintentos, se prueba una vez con
     MODEL_RESPALDO (más liviano, normalmente con menos demanda) antes de rendirse del todo —
     mejor un resultado de menor calidad que perder toda la corrida.
+
+    Cada intento (incluido el de respaldo) consume una solicitud real de la cuota diaria del
+    nivel gratuito (20/día), aunque falle con 503 — por eso son pocos intentos: una racha larga
+    de saturación no debe agotar la cuota completa en una sola llamada, dejando nada para el
+    resto de la corrida (checklist, alcance, EDT) ni para que el usuario reintente más tarde.
     """
-    intentos = 5
+    intentos = 3
     for intento in range(intentos):
         try:
             return client.models.generate_content(**kwargs)
         except genai_errors.ServerError:
             if intento < intentos - 1:
-                time.sleep(min(60, 5 * 2**intento))
+                time.sleep(5 * 2**intento)
                 continue
             if kwargs.get("model") == MODEL_RESPALDO:
                 raise
