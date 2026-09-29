@@ -10,22 +10,29 @@ from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
 MODEL = "gemini-3.6-flash"
+MODEL_RESPALDO = "gemini-flash-lite-latest"
 
 
 def _generar_contenido(client: genai.Client, **kwargs):
     """
-    Llama a Gemini con un único reintento corto ante un 503 ("alta demanda"). En la práctica el
-    503 suele ser intermitente (una llamada falla, la siguiente pasa sin problema) más que una
-    caída sostenida — así que 1 intento extra con poca espera mejora bastante la chance de éxito
-    de cada llamada sin arriesgar mucha cuota. El nivel gratuito es de 20 solicitudes/día y cada
-    intento (falle o no) cuenta como una, por eso no se insiste más que esto: si la saturación
-    sí es sostenida, más reintentos no ayudan y solo queman la cuota del día.
+    Insiste bastante ante un 503 ("alta demanda"): 5 intentos con espera creciente (5s, 10s,
+    20s, 40s, tope 60s) y, si el modelo principal sigue caído, un intento final con
+    MODEL_RESPALDO (más liviano). Prioriza que la corrida SÍ termine bien sobre cuidar la cuota
+    diaria (20/día en el nivel gratuito) — una corrida puede tardar varios minutos y consumir
+    varias solicitudes de más si Gemini está mal, pero es lo que en la práctica logra que el
+    checklist complete en vez de fallar de inmediato ante la primera saturación pasajera.
     """
-    try:
-        return client.models.generate_content(**kwargs)
-    except genai_errors.ServerError:
-        time.sleep(3)
-        return client.models.generate_content(**kwargs)
+    intentos = 5
+    for intento in range(intentos):
+        try:
+            return client.models.generate_content(**kwargs)
+        except genai_errors.ServerError:
+            if intento < intentos - 1:
+                time.sleep(min(60, 5 * 2**intento))
+                continue
+            if kwargs.get("model") == MODEL_RESPALDO:
+                raise
+            return client.models.generate_content(**{**kwargs, "model": MODEL_RESPALDO})
 
 TIPOS_VALIDOS = ["Técnico", "Administrativo", "Económico", "Plazo", "Perfil profesional", "Gestión de Proyecto"]
 
