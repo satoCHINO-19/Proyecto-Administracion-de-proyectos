@@ -114,6 +114,11 @@ if archivos:
                 key=f"rol_{archivo.name}",
                 label_visibility="collapsed",
             )
+    for archivo in archivos:
+        if roles_asignados[archivo.name] == "TDR":
+            st.session_state["tdr_bytes"] = archivo.getvalue()
+            st.session_state["tdr_nombre"] = archivo.name
+            break
 
 if archivos and st.button("Procesar", type="primary"):
     archivos_por_rol: dict[str, list[bytes]] = {rol: [] for rol in ROLES}
@@ -146,9 +151,6 @@ if archivos and st.button("Procesar", type="primary"):
         st.stop()
 
     st.session_state["items"] = items
-    if archivos_por_rol["TDR"]:
-        st.session_state["tdr_bytes"] = archivos_por_rol["TDR"][0]
-        st.session_state["tdr_nombre"] = nombres_por_rol["TDR"][0]
 
 items = st.session_state.get("items")
 
@@ -288,123 +290,123 @@ if items:
         mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
     )
 
-    # ------------------------------------------------------------ EDT / WBS
-    st.markdown("---")
-    st.subheader("EDT / WBS del proyecto")
-    st.caption(
-        "Genera la Estructura de Desglose del Trabajo a partir del TDR, con tiempos y costos "
-        "estimados cruzando la base de conocimientos de referencia (base_conocimientos.json)."
+# ------------------------------------------------------------ EDT / WBS
+st.markdown("---")
+st.subheader("EDT / WBS del proyecto")
+st.caption(
+    "Genera la Estructura de Desglose del Trabajo a partir del TDR, con tiempos y costos "
+    "estimados cruzando la base de conocimientos de referencia (base_conocimientos.json)."
+)
+
+if st.session_state.get("tdr_bytes") and st.button("Generar EDT/WBS"):
+    with st.spinner("Generando EDT/WBS con Gemini..."):
+        try:
+            alcances = generar_alcances(
+                st.session_state["tdr_bytes"], st.session_state["tdr_nombre"]
+            )
+            st.session_state["alcances"] = alcances
+            edt_items, edt_advertencias = generar_edt(
+                st.session_state["tdr_bytes"], st.session_state["tdr_nombre"], alcances
+            )
+            st.session_state["edt_items"] = edt_items
+            st.session_state["edt_advertencias"] = edt_advertencias
+        except Exception as e:
+            st.error(f"Ocurrió un error generando el EDT: {e}")
+
+alcances = st.session_state.get("alcances")
+if alcances:
+    st.markdown("#### Alcance del producto y del proyecto")
+    ac1, ac2 = st.columns(2)
+    for col, titulo, resumen, elementos in [
+        (ac1, "Alcance del producto", alcances["resumen_producto"], alcances["entregables_producto"]),
+        (ac2, "Alcance del proyecto (gestión y entregables)", alcances["resumen_proyecto"], alcances["entregables_proyecto"]),
+    ]:
+        with col:
+            st.markdown(f"**{titulo}**")
+            st.write(resumen)
+            for el in elementos:
+                st.markdown(
+                    f"- **{html.escape(el['nombre'])}** ({html.escape(el['referencia_tdr'])}): "
+                    f"{html.escape(el['descripcion'])}"
+                )
+
+edt_items = st.session_state.get("edt_items")
+if edt_items:
+    df_edt = pd.DataFrame(edt_items)
+    fases = df_edt[~df_edt["codigo"].str.contains(r"\.")]
+    total_dias = fases["duracion_dias"].sum()
+    total_costo = fases["costo_soles"].sum()
+
+    e1, e2 = st.columns(2)
+    e1.markdown(
+        f'<div class="card"><div class="stat-num" style="color:{TEXT}">{total_dias:.0f} días</div>'
+        f'<div class="stat-label">Duración total estimada</div></div>',
+        unsafe_allow_html=True,
+    )
+    e2.markdown(
+        f'<div class="card"><div class="stat-num" style="color:{TEXT}">S/ {total_costo:,.0f}</div>'
+        f'<div class="stat-label">Costo total estimado</div></div>',
+        unsafe_allow_html=True,
     )
 
-    if st.session_state.get("tdr_bytes") and st.button("Generar EDT/WBS"):
-        with st.spinner("Generando EDT/WBS con Gemini..."):
-            try:
-                alcances = generar_alcances(
-                    st.session_state["tdr_bytes"], st.session_state["tdr_nombre"]
-                )
-                st.session_state["alcances"] = alcances
-                edt_items, edt_advertencias = generar_edt(
-                    st.session_state["tdr_bytes"], st.session_state["tdr_nombre"], alcances
-                )
-                st.session_state["edt_items"] = edt_items
-                st.session_state["edt_advertencias"] = edt_advertencias
-            except Exception as e:
-                st.error(f"Ocurrió un error generando el EDT: {e}")
+    edt_advertencias = st.session_state.get("edt_advertencias") or []
+    if edt_advertencias:
+        st.markdown(
+            '<div style="border:1px solid {c};background:{bg};border-radius:8px;padding:10px 14px;">'
+            '<strong style="color:{c};">Revisar estructura de la EDT (regla PMBOK: mínimo 2 hijos)</strong>'
+            '</div>'.format(c=AMBER, bg=AMBER_BG),
+            unsafe_allow_html=True,
+        )
+        for adv in edt_advertencias:
+            st.caption(f"⚠ {adv}")
 
-    alcances = st.session_state.get("alcances")
-    if alcances:
-        st.markdown("#### Alcance del producto y del proyecto")
-        ac1, ac2 = st.columns(2)
-        for col, titulo, resumen, elementos in [
-            (ac1, "Alcance del producto", alcances["resumen_producto"], alcances["entregables_producto"]),
-            (ac2, "Alcance del proyecto (gestión y entregables)", alcances["resumen_proyecto"], alcances["entregables_proyecto"]),
-        ]:
-            with col:
-                st.markdown(f"**{titulo}**")
-                st.write(resumen)
-                for el in elementos:
+    st.caption("La EDT contiene solo entregables. El esfuerzo del equipo (actividades) se muestra como cronograma dentro de cada entregable hoja.")
+
+    # ya viene ordenado numéricamente por jerarquía desde generar_edt(); un sort_values("codigo")
+    # aquí ordenaría como texto ("1.10" antes de "1.2") y rompería la jerarquía.
+    for _, row in df_edt.iterrows():
+        nivel = str(row["codigo"]).count(".")
+        indent = nivel * 28
+        render_html(
+            f"""
+            <div class="card" style="margin-left:{indent}px;">
+              <div style="display:flex; justify-content:space-between; gap:12px;">
+                <div>
+                  <span class="row-item">{html.escape(str(row['codigo']))}</span>
+                  <strong>{html.escape(str(row['nombre']))}</strong>
+                  <span class="badge" style="color:{MUTED};background:{GRAY_BG};margin-left:6px;">{html.escape(str(row['tipo']))}</span>
+                </div>
+                <div style="white-space:nowrap; color:{TEXT};">
+                  {row['duracion_dias']:.0f} días · S/ {row['costo_soles']:,.0f}
+                </div>
+              </div>
+              <div style="color:{MUTED}; font-size:11.5px; margin-top:4px;">
+                Fuente: {html.escape(str(row['fuente_estimacion']))}
+              </div>
+            </div>
+            """
+        )
+        actividades = row.get("actividades") or []
+        if actividades:
+            with st.expander(f"Cronograma de {row['codigo']} ({len(actividades)} actividad{'es' if len(actividades) != 1 else ''})"):
+                for act in actividades:
                     st.markdown(
-                        f"- **{html.escape(el['nombre'])}** ({html.escape(el['referencia_tdr'])}): "
-                        f"{html.escape(el['descripcion'])}"
+                        f"- **{html.escape(act['nombre'])}** — {act['duracion_dias']:.0f} días · "
+                        f"S/ {act['costo_soles']:,.0f} · _{html.escape(act['fuente_estimacion'])}_"
                     )
 
-    edt_items = st.session_state.get("edt_items")
-    if edt_items:
-        df_edt = pd.DataFrame(edt_items)
-        fases = df_edt[~df_edt["codigo"].str.contains(r"\.")]
-        total_dias = fases["duracion_dias"].sum()
-        total_costo = fases["costo_soles"].sum()
-
-        e1, e2 = st.columns(2)
-        e1.markdown(
-            f'<div class="card"><div class="stat-num" style="color:{TEXT}">{total_dias:.0f} días</div>'
-            f'<div class="stat-label">Duración total estimada</div></div>',
-            unsafe_allow_html=True,
-        )
-        e2.markdown(
-            f'<div class="card"><div class="stat-num" style="color:{TEXT}">S/ {total_costo:,.0f}</div>'
-            f'<div class="stat-label">Costo total estimado</div></div>',
-            unsafe_allow_html=True,
-        )
-
-        edt_advertencias = st.session_state.get("edt_advertencias") or []
-        if edt_advertencias:
-            st.markdown(
-                '<div style="border:1px solid {c};background:{bg};border-radius:8px;padding:10px 14px;">'
-                '<strong style="color:{c};">Revisar estructura de la EDT (regla PMBOK: mínimo 2 hijos)</strong>'
-                '</div>'.format(c=AMBER, bg=AMBER_BG),
-                unsafe_allow_html=True,
-            )
-            for adv in edt_advertencias:
-                st.caption(f"⚠ {adv}")
-
-        st.caption("La EDT contiene solo entregables. El esfuerzo del equipo (actividades) se muestra como cronograma dentro de cada entregable hoja.")
-
-        # ya viene ordenado numéricamente por jerarquía desde generar_edt(); un sort_values("codigo")
-        # aquí ordenaría como texto ("1.10" antes de "1.2") y rompería la jerarquía.
-        for _, row in df_edt.iterrows():
-            nivel = str(row["codigo"]).count(".")
-            indent = nivel * 28
-            render_html(
-                f"""
-                <div class="card" style="margin-left:{indent}px;">
-                  <div style="display:flex; justify-content:space-between; gap:12px;">
-                    <div>
-                      <span class="row-item">{html.escape(str(row['codigo']))}</span>
-                      <strong>{html.escape(str(row['nombre']))}</strong>
-                      <span class="badge" style="color:{MUTED};background:{GRAY_BG};margin-left:6px;">{html.escape(str(row['tipo']))}</span>
-                    </div>
-                    <div style="white-space:nowrap; color:{TEXT};">
-                      {row['duracion_dias']:.0f} días · S/ {row['costo_soles']:,.0f}
-                    </div>
-                  </div>
-                  <div style="color:{MUTED}; font-size:11.5px; margin-top:4px;">
-                    Fuente: {html.escape(str(row['fuente_estimacion']))}
-                  </div>
-                </div>
-                """
-            )
-            actividades = row.get("actividades") or []
-            if actividades:
-                with st.expander(f"Cronograma de {row['codigo']} ({len(actividades)} actividad{'es' if len(actividades) != 1 else ''})"):
-                    for act in actividades:
-                        st.markdown(
-                            f"- **{html.escape(act['nombre'])}** — {act['duracion_dias']:.0f} días · "
-                            f"S/ {act['costo_soles']:,.0f} · _{html.escape(act['fuente_estimacion'])}_"
-                        )
-
-        buffer_edt = io.BytesIO()
-        with pd.ExcelWriter(buffer_edt, engine="openpyxl") as writer:
-            df_edt.drop(columns=["actividades"]).to_excel(writer, index=False, sheet_name="EDT")
-            filas_cronograma = [
-                {"codigo_entregable": it["codigo"], "entregable": it["nombre"], **act}
-                for it in edt_items
-                for act in (it.get("actividades") or [])
-            ]
-            pd.DataFrame(filas_cronograma).to_excel(writer, index=False, sheet_name="Cronograma")
-        st.download_button(
-            "Descargar EDT/WBS y cronograma en Excel",
-            data=buffer_edt.getvalue(),
-            file_name="edt_wbs.xlsx",
-            mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
-        )
+    buffer_edt = io.BytesIO()
+    with pd.ExcelWriter(buffer_edt, engine="openpyxl") as writer:
+        df_edt.drop(columns=["actividades"]).to_excel(writer, index=False, sheet_name="EDT")
+        filas_cronograma = [
+            {"codigo_entregable": it["codigo"], "entregable": it["nombre"], **act}
+            for it in edt_items
+            for act in (it.get("actividades") or [])
+        ]
+        pd.DataFrame(filas_cronograma).to_excel(writer, index=False, sheet_name="Cronograma")
+    st.download_button(
+        "Descargar EDT/WBS y cronograma en Excel",
+        data=buffer_edt.getvalue(),
+        file_name="edt_wbs.xlsx",
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+    )
