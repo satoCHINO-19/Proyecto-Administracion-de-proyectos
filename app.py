@@ -1,3 +1,4 @@
+import hashlib
 import html
 import io
 import re
@@ -7,6 +8,13 @@ import streamlit as st
 from dotenv import load_dotenv
 
 from procesamiento import generar_alcances, generar_edt, procesar_checklist
+
+
+def _fingerprint(*partes: bytes) -> str:
+    h = hashlib.sha256()
+    for p in partes:
+        h.update(p)
+    return h.hexdigest()
 
 load_dotenv()
 
@@ -129,48 +137,68 @@ if archivos and st.button("Procesar", type="primary"):
         archivos_por_rol[rol].append(archivo.getvalue())
         nombres_por_rol[rol].append(archivo.name)
 
-    progreso_placeholder = st.empty()
-
-    def _reportar_progreso(actual: int, total: int) -> None:
-        if actual == -1:
-            progreso_placeholder.info("Reconciliando resultados de todas las secciones...")
-        else:
-            progreso_placeholder.info(f"Procesando sección {actual} de {total} del TDR...")
-
-    with st.spinner("Subiendo archivos y generando checklist con Gemini... puede tardar un poco con PDFs grandes"):
-        try:
-            items = procesar_checklist(archivos_por_rol, nombres_por_rol, on_progreso=_reportar_progreso)
-            if items:
-                st.session_state["items"] = items
-            else:
-                st.warning("Gemini no devolvió ningún ítem. Revisa que el TDR tenga requerimientos numerados.")
-        except Exception as e:
-            st.error(f"Ocurrió un error procesando el checklist: {e}")
-
-    progreso_placeholder.empty()
-
     # Un solo clic en "Procesar" corre las tres etapas (checklist, alcance y EDT), cada una
     # con su propio try/except para que si una falla (p.ej. un 503 de Gemini) las demás igual
-    # se intenten.
+    # se intenten. Cada etapa se salta si ya hay un resultado guardado para estos MISMOS
+    # archivos (huella sha256) — la cuota gratuita es de 20 solicitudes/día, y sin esto, cada
+    # clic en "Procesar" para reintentar una etapa que falló volvía a gastar cuota en las que
+    # ya habían salido bien.
+    checklist_fp = _fingerprint(
+        *archivos_por_rol["TDR"], *archivos_por_rol["CONSULTAS"], *archivos_por_rol["PROPUESTA"]
+    )
+    if st.session_state.get("items") and st.session_state.get("checklist_fp") == checklist_fp:
+        st.info("Checklist ya generado para estos archivos — no se vuelve a procesar (ahorra cuota).")
+    else:
+        progreso_placeholder = st.empty()
+
+        def _reportar_progreso(actual: int, total: int) -> None:
+            if actual == -1:
+                progreso_placeholder.info("Reconciliando resultados de todas las secciones...")
+            else:
+                progreso_placeholder.info(f"Procesando sección {actual} de {total} del TDR...")
+
+        with st.spinner("Subiendo archivos y generando checklist con Gemini... puede tardar un poco con PDFs grandes"):
+            try:
+                items = procesar_checklist(archivos_por_rol, nombres_por_rol, on_progreso=_reportar_progreso)
+                if items:
+                    st.session_state["items"] = items
+                    st.session_state["checklist_fp"] = checklist_fp
+                else:
+                    st.warning("Gemini no devolvió ningún ítem. Revisa que el TDR tenga requerimientos numerados.")
+            except Exception as e:
+                st.error(f"Ocurrió un error procesando el checklist: {e}")
+
+        progreso_placeholder.empty()
+
     tdr_bytes_run = st.session_state.get("tdr_bytes")
     tdr_nombre_run = st.session_state.get("tdr_nombre")
     if tdr_bytes_run:
-        alcances_run = None
-        with st.spinner("Generando alcance del producto y del proyecto con Gemini..."):
-            try:
-                alcances_run = generar_alcances(tdr_bytes_run, tdr_nombre_run)
-                st.session_state["alcances"] = alcances_run
-            except Exception as e:
-                st.error(f"Ocurrió un error generando el alcance: {e}")
+        tdr_fp = _fingerprint(tdr_bytes_run)
+        alcances_run = st.session_state.get("alcances")
+        if alcances_run and st.session_state.get("alcances_fp") == tdr_fp:
+            st.info("Alcance ya generado para este TDR — no se vuelve a procesar (ahorra cuota).")
+        else:
+            alcances_run = None
+            with st.spinner("Generando alcance del producto y del proyecto con Gemini..."):
+                try:
+                    alcances_run = generar_alcances(tdr_bytes_run, tdr_nombre_run)
+                    st.session_state["alcances"] = alcances_run
+                    st.session_state["alcances_fp"] = tdr_fp
+                except Exception as e:
+                    st.error(f"Ocurrió un error generando el alcance: {e}")
 
         if alcances_run:
-            with st.spinner("Generando EDT/WBS con Gemini..."):
-                try:
-                    edt_items_run, edt_advertencias_run = generar_edt(tdr_bytes_run, tdr_nombre_run, alcances_run)
-                    st.session_state["edt_items"] = edt_items_run
-                    st.session_state["edt_advertencias"] = edt_advertencias_run
-                except Exception as e:
-                    st.error(f"Ocurrió un error generando la EDT: {e}")
+            if st.session_state.get("edt_items") and st.session_state.get("edt_fp") == tdr_fp:
+                st.info("EDT ya generada para este TDR — no se vuelve a procesar (ahorra cuota).")
+            else:
+                with st.spinner("Generando EDT/WBS con Gemini..."):
+                    try:
+                        edt_items_run, edt_advertencias_run = generar_edt(tdr_bytes_run, tdr_nombre_run, alcances_run)
+                        st.session_state["edt_items"] = edt_items_run
+                        st.session_state["edt_advertencias"] = edt_advertencias_run
+                        st.session_state["edt_fp"] = tdr_fp
+                    except Exception as e:
+                        st.error(f"Ocurrió un error generando la EDT: {e}")
 
 items = st.session_state.get("items")
 
