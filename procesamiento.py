@@ -2,9 +2,11 @@ import io
 import json
 import os
 import tempfile
+import time
 
 import pypdf
 from google import genai
+from google.genai import errors as genai_errors
 from pydantic import BaseModel
 
 MODEL = "gemini-3.6-flash"
@@ -12,13 +14,18 @@ MODEL = "gemini-3.6-flash"
 
 def _generar_contenido(client: genai.Client, **kwargs):
     """
-    Llama a Gemini una sola vez, sin reintento automático. El nivel gratuito tiene una cuota
-    diaria muy ajustada (20 solicitudes/día) y cada reintento cuenta como una solicitud real
-    aunque falle con 503 — reintentar automáticamente ante una saturación sostenida del servidor
-    solo quema la cuota del día sin mejorar las chances de éxito. Si falla, el error sube tal
-    cual para que el usuario decida cuándo volver a intentarlo (dándole a "Procesar" de nuevo).
+    Llama a Gemini con un único reintento corto ante un 503 ("alta demanda"). En la práctica el
+    503 suele ser intermitente (una llamada falla, la siguiente pasa sin problema) más que una
+    caída sostenida — así que 1 intento extra con poca espera mejora bastante la chance de éxito
+    de cada llamada sin arriesgar mucha cuota. El nivel gratuito es de 20 solicitudes/día y cada
+    intento (falle o no) cuenta como una, por eso no se insiste más que esto: si la saturación
+    sí es sostenida, más reintentos no ayudan y solo queman la cuota del día.
     """
-    return client.models.generate_content(**kwargs)
+    try:
+        return client.models.generate_content(**kwargs)
+    except genai_errors.ServerError:
+        time.sleep(3)
+        return client.models.generate_content(**kwargs)
 
 TIPOS_VALIDOS = ["Técnico", "Administrativo", "Económico", "Plazo", "Perfil profesional", "Gestión de Proyecto"]
 
@@ -219,7 +226,7 @@ def _subir_documentos(
     return contents
 
 
-def _dividir_pdf_por_paginas(pdf_bytes: bytes, tamano_chunk: int = 30, solapamiento: int = 3) -> list[bytes]:
+def _dividir_pdf_por_paginas(pdf_bytes: bytes, tamano_chunk: int = 45, solapamiento: int = 3) -> list[bytes]:
     """
     Divide un PDF en tramos de `tamano_chunk` páginas (con `solapamiento` páginas repetidas
     entre tramos consecutivos, para no cortar un requerimiento justo en el límite). Un TDR
